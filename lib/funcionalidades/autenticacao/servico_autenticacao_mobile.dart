@@ -78,6 +78,29 @@ class ServicoAutenticacaoMobile implements ServicoAutenticacao {
   }
 
   @override
+  Future<void> esquecerCredenciaisLembradas() async {
+    await armazenamento.remover(ChavesArmazenamentoSeguro.loginEmailLembrado);
+    await armazenamento.remover(ChavesArmazenamentoSeguro.loginSenhaLembrada);
+  }
+
+  @override
+  Future<CredenciaisLembradas?> obterCredenciaisLembradas() async {
+    final String? email = await armazenamento.ler(
+      ChavesArmazenamentoSeguro.loginEmailLembrado,
+    );
+    final String? senha = await armazenamento.ler(
+      ChavesArmazenamentoSeguro.loginSenhaLembrada,
+    );
+
+    final CredenciaisLembradas credenciais = CredenciaisLembradas(
+      email: email?.trim() ?? '',
+      senha: senha ?? '',
+    );
+
+    return credenciais.preenchidas ? credenciais : null;
+  }
+
+  @override
   Future<BootstrapWebview?> prepararWebview() async {
     final String? accessToken = await armazenamento.ler(
       ChavesArmazenamentoSeguro.tokenAcesso,
@@ -165,6 +188,18 @@ class ServicoAutenticacaoMobile implements ServicoAutenticacao {
     await prepararWebview();
 
     return true;
+  }
+
+  @override
+  Future<void> salvarCredenciaisLembradas(CredenciaisLogin credenciais) async {
+    await armazenamento.salvar(
+      chave: ChavesArmazenamentoSeguro.loginEmailLembrado,
+      valor: credenciais.email.trim(),
+    );
+    await armazenamento.salvar(
+      chave: ChavesArmazenamentoSeguro.loginSenhaLembrada,
+      valor: credenciais.senha,
+    );
   }
 
   @override

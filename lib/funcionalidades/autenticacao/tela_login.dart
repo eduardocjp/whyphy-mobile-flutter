@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../app/rotas.dart';
@@ -18,13 +20,48 @@ class _TelaLoginState extends State<TelaLogin> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _senhaController = TextEditingController();
   bool _carregando = false;
+  bool _lembrarCredenciais = false;
   String? _mensagemErro;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_carregarCredenciaisLembradas());
+  }
 
   @override
   void dispose() {
     _emailController.dispose();
     _senhaController.dispose();
     super.dispose();
+  }
+
+  Future<void> _carregarCredenciaisLembradas() async {
+    final CredenciaisLembradas? credenciais = await widget.servicoAutenticacao
+        .obterCredenciaisLembradas();
+
+    if (!mounted || credenciais == null) {
+      return;
+    }
+
+    _emailController.text = credenciais.email;
+    _senhaController.text = credenciais.senha;
+
+    setState(() {
+      _lembrarCredenciais = true;
+    });
+  }
+
+  void _alterarLembrarCredenciais(bool? valor) {
+    final bool deveLembrar = valor ?? false;
+
+    setState(() {
+      _lembrarCredenciais = deveLembrar;
+    });
+
+    if (!deveLembrar) {
+      unawaited(widget.servicoAutenticacao.esquecerCredenciaisLembradas());
+    }
   }
 
   Future<void> _entrar() async {
@@ -56,6 +93,18 @@ class _TelaLoginState extends State<TelaLogin> {
     }
 
     if (resultado.autenticado) {
+      if (_lembrarCredenciais) {
+        await widget.servicoAutenticacao.salvarCredenciaisLembradas(
+          CredenciaisLogin(email: email, senha: senha),
+        );
+      } else {
+        await widget.servicoAutenticacao.esquecerCredenciaisLembradas();
+      }
+
+      if (!mounted) {
+        return;
+      }
+
       await Navigator.of(context).pushReplacementNamed(RotasApp.shell);
       return;
     }
@@ -101,6 +150,39 @@ class _TelaLoginState extends State<TelaLogin> {
                 style: const TextStyle(color: CoresApp.textoPrincipal),
                 decoration: const InputDecoration(labelText: 'Senha'),
                 onSubmitted: (_) => _entrar(),
+              ),
+              const SizedBox(height: EspacamentoApp.pequeno),
+              InkWell(
+                borderRadius: const BorderRadius.all(Radius.circular(14)),
+                onTap: _carregando
+                    ? null
+                    : () => _alterarLembrarCredenciais(!_lembrarCredenciais),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: <Widget>[
+                      Checkbox(
+                        value: _lembrarCredenciais,
+                        onChanged: _carregando
+                            ? null
+                            : _alterarLembrarCredenciais,
+                        activeColor: CoresApp.primaria,
+                        checkColor: CoresApp.fundo,
+                        side: const BorderSide(color: CoresApp.borda),
+                      ),
+                      Expanded(
+                        child: Text(
+                          'Lembrar-me',
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: CoresApp.textoPrincipal,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               if (_mensagemErro != null) ...<Widget>[
                 const SizedBox(height: EspacamentoApp.medio),

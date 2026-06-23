@@ -258,6 +258,20 @@ class MainActivity : FlutterActivity() {
         return true
     }
 
+    private fun tratarVoltarFisicoAndroid() {
+        if (voltarWebviewAtiva()) {
+            return
+        }
+
+        canalEventosWebview?.invokeMethod(
+            "notificacaoWeb",
+            mapOf(
+                "mensagem" to "Use a navegação do WhyPhy para sair ou voltar.",
+                "modulo" to "",
+            ),
+        )
+    }
+
     private fun precisaPermissaoCameraParaChooser(
         params: WebChromeClient.FileChooserParams,
     ): Boolean {
@@ -341,6 +355,11 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        tratarVoltarFisicoAndroid()
     }
 
     private fun tratarArmazenamentoSeguro(
@@ -507,6 +526,7 @@ private class WebViewWhyPhy(
         }
         .toMap()
     private var logoutNotificado = false
+    private var logoutVisualOcultado = false
 
     init {
         activity.registrarWebViewAtiva(webView)
@@ -529,7 +549,13 @@ private class WebViewWhyPhy(
         webView.settings.domStorageEnabled = true
         webView.settings.setSupportMultipleWindows(false)
         webView.addJavascriptInterface(
-            BridgeWhyPhyApp(canalEventosWebview, gerenciadorDownloads, initialHeaders),
+            BridgeWhyPhyApp(
+                canalEventosWebview,
+                gerenciadorDownloads,
+                initialHeaders,
+            ) {
+                ocultarWebViewParaLogout()
+            },
             "WhyPhyApp",
         )
         webView.setDownloadListener { downloadUrl, userAgent, contentDisposition, mimeType, _ ->
@@ -725,12 +751,31 @@ private class WebViewWhyPhy(
         }
 
         logoutNotificado = true
+        ocultarWebViewParaLogout()
         canalEventosWebview.invokeMethod(
             "logoutDetectado",
             mapOf("url" to uri.toString()),
         )
 
         return true
+    }
+
+    private fun ocultarWebViewParaLogout() {
+        if (logoutVisualOcultado) {
+            return
+        }
+
+        logoutVisualOcultado = true
+        webView.setBackgroundColor(Color.BLACK)
+        webView.isClickable = false
+        webView.isFocusable = false
+        webView.animate()
+            .alpha(0f)
+            .setDuration(140)
+            .withEndAction {
+                webView.visibility = View.INVISIBLE
+            }
+            .start()
     }
 
     private fun notificarMensagemWeb(mensagem: String) {
@@ -1037,24 +1082,62 @@ private class WebViewWhyPhy(
                 }
               }, true);
 
-              var shareOriginal = navigator.share;
-              if (shareOriginal) {
-                navigator.share = function(dados) {
-                  var arquivo = dados && dados.files && dados.files[0];
-                  if (arquivo) {
-                    return compartilharBlob(arquivo, dados, arquivo.name || "whyphy-compartilhar.png").then(function(compartilhou) {
-                      if (compartilhou) return;
-                      return salvarBlob(arquivo, arquivo.name || "whyphy-compartilhar.png").then(function(salvou) {
-                        if (salvou) return;
-                        return shareOriginal.apply(navigator, [dados]);
-                      });
-                    }).catch(function() {
-                      return shareOriginal.apply(navigator, [dados]);
-                    });
-                  }
-                  return shareOriginal.apply(navigator, arguments);
-                };
+              function temArquivoCompartilhavel(dados) {
+                return !!(
+                  dados &&
+                  dados.files &&
+                  dados.files.length > 0 &&
+                  dados.files[0]
+                );
               }
+
+              function definirMetodoNavigator(nome, metodo) {
+                try {
+                  Object.defineProperty(navigator, nome, {
+                    configurable: true,
+                    value: metodo
+                  });
+                  return;
+                } catch (erro) {}
+                try {
+                  navigator[nome] = metodo;
+                } catch (erro) {}
+              }
+
+              var canShareOriginal = navigator.canShare;
+              definirMetodoNavigator("canShare", function(dados) {
+                if (temArquivoCompartilhavel(dados)) {
+                  return true;
+                }
+                if (typeof canShareOriginal === "function") {
+                  return canShareOriginal.apply(navigator, arguments);
+                }
+                return false;
+              });
+
+              var shareOriginal = navigator.share;
+              definirMetodoNavigator("share", function(dados) {
+                var arquivo = dados && dados.files && dados.files[0];
+                if (arquivo) {
+                  return compartilharBlob(arquivo, dados, arquivo.name || "whyphy-compartilhar.png").then(function(compartilhou) {
+                    if (compartilhou) return;
+                    return salvarBlob(arquivo, arquivo.name || "whyphy-compartilhar.png").then(function(salvou) {
+                      if (salvou) return;
+                      if (typeof shareOriginal === "function") {
+                        return shareOriginal.apply(navigator, [dados]);
+                      }
+                    });
+                  }).catch(function() {
+                    if (typeof shareOriginal === "function") {
+                      return shareOriginal.apply(navigator, [dados]);
+                    }
+                  });
+                }
+                if (typeof shareOriginal === "function") {
+                  return shareOriginal.apply(navigator, arguments);
+                }
+                return Promise.reject(new Error("Compartilhamento indisponivel."));
+              });
 
               var openOriginal = window.open;
               window.open = function(url) {
@@ -1201,6 +1284,7 @@ private class BridgeWhyPhyApp(
     private val canalEventosWebview: MethodChannel,
     private val gerenciadorDownloads: GerenciadorDownloadsWebview,
     private val headers: Map<String, String>,
+    private val aoLogoutDetectado: () -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -1232,6 +1316,7 @@ private class BridgeWhyPhyApp(
     @JavascriptInterface
     fun logoutDetectado(url: String) {
         mainHandler.post {
+            aoLogoutDetectado()
             canalEventosWebview.invokeMethod(
                 "logoutDetectado",
                 mapOf("url" to url),

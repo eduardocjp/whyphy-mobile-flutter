@@ -32,6 +32,7 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
 
   bool _atualizando = false;
   bool _logoutInterceptado = false;
+  bool _logoutEmAndamento = false;
   int _versaoNavegacaoPush = 0;
   bool _webviewCarregando = true;
   String? _mensagemTopo;
@@ -171,7 +172,11 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       return;
     }
 
-    _logoutInterceptado = true;
+    setState(() {
+      _logoutInterceptado = true;
+      _logoutEmAndamento = true;
+    });
+
     await widget.servicoAutenticacao.sair();
 
     if (!mounted) {
@@ -379,6 +384,31 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
   @override
   Widget build(BuildContext context) {
     final SessaoWhyPhy? sessao = widget.estadoSessao.sessaoAtual;
+    final bool temWebviewAutenticada = sessao?.bootstrap != null;
+    final Widget conteudo = Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        _buildConteudo(context, sessao),
+        if (temWebviewAutenticada && _webviewCarregando)
+          const _CarregamentoWebview(),
+        if (_logoutEmAndamento)
+          const _CarregamentoWebview(
+            descricao: 'Limpando o acesso e voltando para o login seguro.',
+            mostrarPulsos: false,
+            titulo: 'Encerrando sessão',
+          ),
+        if (_mensagemTopo != null)
+          Positioned(
+            top: 12,
+            left: 16,
+            right: 16,
+            child: _AvisoTopoWebview(
+              mensagem: _mensagemTopo!,
+              modulo: _moduloMensagemTopo ?? '',
+            ),
+          ),
+      ],
+    );
 
     return PopScope(
       canPop: false,
@@ -389,26 +419,7 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       },
       child: ColoredBox(
         color: CoresApp.fundo,
-        child: SafeArea(
-          child: Stack(
-            fit: StackFit.expand,
-            children: <Widget>[
-              _buildConteudo(context, sessao),
-              if (sessao?.bootstrap != null && _webviewCarregando)
-                const _CarregamentoWebview(),
-              if (_mensagemTopo != null)
-                Positioned(
-                  top: 12,
-                  left: 16,
-                  right: 16,
-                  child: _AvisoTopoWebview(
-                    mensagem: _mensagemTopo!,
-                    modulo: _moduloMensagemTopo ?? '',
-                  ),
-                ),
-            ],
-          ),
-        ),
+        child: SafeArea(child: conteudo),
       ),
     );
   }
@@ -637,7 +648,15 @@ class _ModalPopupNativoWebState extends State<_ModalPopupNativoWeb> {
 }
 
 class _CarregamentoWebview extends StatelessWidget {
-  const _CarregamentoWebview();
+  const _CarregamentoWebview({
+    this.descricao = 'Sincronizando sua sessão e preparando o ambiente.',
+    this.mostrarPulsos = true,
+    this.titulo = 'Carregando WhyPhy',
+  });
+
+  final String descricao;
+  final bool mostrarPulsos;
+  final String titulo;
 
   @override
   Widget build(BuildContext context) {
@@ -718,7 +737,7 @@ class _CarregamentoWebview extends StatelessWidget {
                       ),
                       const SizedBox(height: EspacamentoApp.grande),
                       Text(
-                        'Carregando WhyPhy',
+                        titulo,
                         style: textos.headlineSmall?.copyWith(
                           color: CoresApp.textoPrincipal,
                           fontWeight: FontWeight.w900,
@@ -727,7 +746,7 @@ class _CarregamentoWebview extends StatelessWidget {
                       ),
                       const SizedBox(height: EspacamentoApp.pequeno),
                       Text(
-                        'Sincronizando sua sessão e preparando o ambiente.',
+                        descricao,
                         style: textos.bodyMedium?.copyWith(
                           color: CoresApp.textoSecundario,
                           height: 1.35,
@@ -745,17 +764,19 @@ class _CarregamentoWebview extends StatelessWidget {
                           backgroundColor: CoresApp.superficieElevada,
                         ),
                       ),
-                      const SizedBox(height: EspacamentoApp.medio),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: const <Widget>[
-                          _PulsoModulo(cor: CoresApp.dieta),
-                          SizedBox(width: EspacamentoApp.pequeno),
-                          _PulsoModulo(cor: CoresApp.treinos),
-                          SizedBox(width: EspacamentoApp.pequeno),
-                          _PulsoModulo(cor: CoresApp.consultas),
-                        ],
-                      ),
+                      if (mostrarPulsos) ...<Widget>[
+                        const SizedBox(height: EspacamentoApp.medio),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const <Widget>[
+                            _PulsoModulo(cor: CoresApp.dieta),
+                            SizedBox(width: EspacamentoApp.pequeno),
+                            _PulsoModulo(cor: CoresApp.treinos),
+                            SizedBox(width: EspacamentoApp.pequeno),
+                            _PulsoModulo(cor: CoresApp.consultas),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),

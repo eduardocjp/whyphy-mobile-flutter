@@ -8,6 +8,17 @@ class CredenciaisLogin {
   final String senha;
 }
 
+class CredenciaisLembradas {
+  const CredenciaisLembradas({required this.email, required this.senha});
+
+  final String email;
+  final String senha;
+
+  bool get preenchidas {
+    return email.trim().isNotEmpty && senha.isNotEmpty;
+  }
+}
+
 enum StatusLogin {
   autenticado,
   recusado,
@@ -36,9 +47,15 @@ class ResultadoLogin {
 abstract interface class ServicoAutenticacao {
   Future<ResultadoLogin> entrar(CredenciaisLogin credenciais);
 
+  Future<void> esquecerCredenciaisLembradas();
+
+  Future<CredenciaisLembradas?> obterCredenciaisLembradas();
+
   Future<BootstrapWebview?> prepararWebview();
 
   Future<bool> restaurarSessao();
+
+  Future<void> salvarCredenciaisLembradas(CredenciaisLogin credenciais);
 
   Future<void> sair();
 }

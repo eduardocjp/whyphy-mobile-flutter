@@ -15,6 +15,8 @@ abstract final class ChavesArmazenamentoSeguro {
   static const String refreshToken = 'whyphy_refresh_token';
   static const String deviceId = 'whyphy_device_id';
   static const String sessaoMinima = 'whyphy_sessao_minima';
+  static const String loginEmailLembrado = 'whyphy_login_email_lembrado';
+  static const String loginSenhaLembrada = 'whyphy_login_senha_lembrada';
 }
 
 class ServicoArmazenamentoSeguroCanal implements ServicoArmazenamentoSeguro {
