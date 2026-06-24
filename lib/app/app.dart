@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../funcionalidades/autenticacao/tela_login.dart';
+import '../funcionalidades/shell/tela_shell_webview_ios.dart';
 import '../funcionalidades/shell/tela_shell_webview.dart';
 import '../funcionalidades/splash/tela_splash.dart';
 import '../nucleo/tema/cores_app.dart';
@@ -71,10 +74,19 @@ class AplicativoWhyPhy extends StatelessWidget {
             TelaSplash(servicoAutenticacao: deps.servicoAutenticacao),
         RotasApp.login: (_) =>
             TelaLogin(servicoAutenticacao: deps.servicoAutenticacao),
-        RotasApp.shell: (_) => TelaShellWebview(
-          estadoSessao: deps.estadoSessao,
-          servicoAutenticacao: deps.servicoAutenticacao,
-        ),
+        RotasApp.shell: (_) {
+          if (Platform.isIOS) {
+            return TelaShellWebviewIOS(
+              estadoSessao: deps.estadoSessao,
+              servicoAutenticacao: deps.servicoAutenticacao,
+            );
+          }
+
+          return TelaShellWebview(
+            estadoSessao: deps.estadoSessao,
+            servicoAutenticacao: deps.servicoAutenticacao,
+          );
+        },
       },
     );
   }

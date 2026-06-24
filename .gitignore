@@ -44,8 +44,8 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Local project documentation
-docs/
+# Local project documentation (kept out of commits by project rule)
+/docs/
 
 # Firebase configuration generated locally
 firebase.json
@@ -58,4 +58,9 @@ ios/Runner/GoogleService-Info.plist
 .env.*
 *.keystore
 *.jks
+*.pem
+*.p8
+*.p12
+*.key
+android/local.properties
 
