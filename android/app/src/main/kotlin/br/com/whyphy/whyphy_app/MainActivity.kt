@@ -2,10 +2,17 @@ package br.com.whyphy.whyphy_app
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlarmManager
 import android.app.DownloadManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.pdf.PdfDocument
@@ -14,6 +21,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.MediaStore
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -27,7 +35,10 @@ import android.webkit.PermissionRequest
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -39,9 +50,11 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
+import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
 import java.util.Locale
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -50,6 +63,7 @@ import javax.crypto.spec.GCMParameterSpec
 class MainActivity : FlutterActivity() {
     private var arquivoSelecionadoCallback: ValueCallback<Array<Uri>>? = null
     private var arquivoSelecionadoParamsPendente: WebChromeClient.FileChooserParams? = null
+    private var arquivoUploadNativoResult: MethodChannel.Result? = null
     private var canalEventosWebview: MethodChannel? = null
     private var permissaoCameraPendente: PermissionRequest? = null
     private var payloadPushPendente: Map<String, String>? = null
@@ -59,6 +73,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        criarCanaisNotificacaoLocal()
 
         val armazenamento = ArmazenamentoSeguroWhyPhy(applicationContext)
 
@@ -76,6 +91,16 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "inicializarPush" -> result.success(null)
                 "obterRegistroPush" -> result.success(null)
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "br.com.whyphy/upload_nativo",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "selecionarArquivo" -> selecionarArquivoUploadNativo(result)
                 else -> result.notImplemented()
             }
         }
@@ -120,6 +145,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "limparCookiesWebview" -> {
                     limparCookiesWebviewAtiva()
+                    result.success(null)
+                }
+                "responderUploadNativo" -> {
+                    responderUploadNativoWebview(call.arguments)
                     result.success(null)
                 }
                 else -> result.notImplemented()
@@ -195,6 +224,32 @@ class MainActivity : FlutterActivity() {
         if (normalizedValue.isNotEmpty() && !payload.containsKey(key)) {
             payload[key] = normalizedValue
         }
+    }
+
+    private fun criarCanaisNotificacaoLocal() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        val canais = listOf(
+            NotificationChannel(
+                CANAL_NOTIFICACAO_TREINO,
+                "WhyPhy treinos",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Alertas locais de treino do WhyPhy."
+            },
+            NotificationChannel(
+                CANAL_NOTIFICACAO_REFEICAO,
+                "WhyPhy refeiÃ§Ãµes",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Alertas locais de refeiÃ§Ã£o do WhyPhy."
+            },
+        )
+
+        canais.forEach(notificationManager::createNotificationChannel)
     }
 
     fun abrirSeletorArquivo(
@@ -318,6 +373,128 @@ class MainActivity : FlutterActivity() {
         CookieManager.getInstance().flush()
     }
 
+    private fun responderUploadNativoWebview(arguments: Any?) {
+        val webView = webViewAtiva ?: return
+        val payload = JSONObject()
+        val map = arguments as? Map<*, *> ?: emptyMap<String, Any?>()
+
+        for ((key, value) in map) {
+            val nome = key as? String ?: continue
+            payload.put(nome, value)
+        }
+
+        val script = """
+            (function() {
+              var detalhe = $payload;
+              window.dispatchEvent(new CustomEvent("WhyPhyUploadResultado", { detail: detalhe }));
+              var callbacks = window.__whyphyUploadCallbacks || {};
+              var callbackId = detalhe && detalhe.callbackId;
+              if (callbackId && callbacks[callbackId]) {
+                callbacks[callbackId](detalhe);
+                delete callbacks[callbackId];
+              }
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script, null)
+    }
+
+    private fun selecionarArquivoUploadNativo(result: MethodChannel.Result) {
+        if (arquivoUploadNativoResult != null) {
+            result.error("upload_em_andamento", "JÃ¡ existe uma seleÃ§Ã£o de arquivo em andamento.", null)
+            return
+        }
+
+        arquivoUploadNativoResult = result
+
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("image/*", "application/pdf"),
+            )
+        }
+
+        try {
+            startActivityForResult(intent, REQUEST_UPLOAD_NATIVO)
+        } catch (erro: Exception) {
+            arquivoUploadNativoResult = null
+            result.error("seletor_indisponivel", "NÃ£o foi possÃ­vel abrir o seletor de arquivo.", null)
+        }
+    }
+
+    private fun concluirUploadNativo(data: Intent?) {
+        val result = arquivoUploadNativoResult ?: return
+        arquivoUploadNativoResult = null
+        val uri = data?.data
+
+        if (uri == null) {
+            result.success(null)
+            return
+        }
+
+        try {
+            result.success(copiarArquivoUploadNativo(uri))
+        } catch (erro: Exception) {
+            result.error("arquivo_indisponivel", "NÃ£o foi possÃ­vel preparar o arquivo selecionado.", null)
+        }
+    }
+
+    private fun copiarArquivoUploadNativo(uri: Uri): Map<String, Any?> {
+        val resolver = contentResolver
+        val nomeOriginal = nomeArquivoUri(uri)
+        val nomeSeguro = normalizarNomeArquivoUpload(nomeOriginal)
+        val diretorio = File(cacheDir, "whyphy_uploads")
+
+        if (!diretorio.exists()) {
+            diretorio.mkdirs()
+        }
+
+        val destino = File(diretorio, "${System.currentTimeMillis()}_${UUID.randomUUID()}_$nomeSeguro")
+
+        resolver.openInputStream(uri)?.use { input ->
+            destino.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        } ?: throw IllegalStateException("upload_input_indisponivel")
+
+        val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+
+        return mapOf(
+            "caminhoLocal" to destino.absolutePath,
+            "mimeType" to mimeType,
+            "nome" to nomeSeguro,
+            "tamanhoBytes" to destino.length(),
+        )
+    }
+
+    private fun nomeArquivoUri(uri: Uri): String {
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val indiceNome = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+
+            if (indiceNome >= 0 && cursor.moveToFirst()) {
+                val nome = cursor.getString(indiceNome)
+
+                if (!nome.isNullOrBlank()) {
+                    return nome
+                }
+            }
+        }
+
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "whyphy-arquivo"
+    }
+
+    private fun normalizarNomeArquivoUpload(nomeArquivo: String): String {
+        return nomeArquivo
+            .trim()
+            .ifBlank { "whyphy-arquivo" }
+            .replace(Regex("[^A-Za-z0-9._-]"), "-")
+            .replace(Regex("-+"), "-")
+            .trim('-')
+            .ifBlank { "whyphy-arquivo" }
+    }
+
     private fun hostPermitidoWebviewAtiva(host: String): Boolean {
         if (host.isBlank()) {
             return false
@@ -386,6 +563,16 @@ class MainActivity : FlutterActivity() {
 
             arquivoSelecionadoCallback?.onReceiveValue(resultado)
             arquivoSelecionadoCallback = null
+            return
+        }
+
+        if (requestCode == REQUEST_UPLOAD_NATIVO) {
+            if (resultCode == Activity.RESULT_OK) {
+                concluirUploadNativo(data)
+            } else {
+                arquivoUploadNativoResult?.success(null)
+                arquivoUploadNativoResult = null
+            }
             return
         }
 
@@ -485,6 +672,64 @@ class MainActivity : FlutterActivity() {
         const val REQUEST_FILE_CHOOSER = 9001
         const val REQUEST_CAMERA_PERMISSION_FILE_CHOOSER = 9002
         const val REQUEST_CAMERA_PERMISSION_WEBVIEW = 9003
+        const val REQUEST_UPLOAD_NATIVO = 9004
+        const val CANAL_NOTIFICACAO_TREINO = "WhyPhyWorkoutNotifications"
+        const val CANAL_NOTIFICACAO_REFEICAO = "WhyPhyMealNotifications"
+    }
+}
+
+class NotificacaoLocalWhyPhyReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val canal = intent.getStringExtra("canal").orEmpty().ifBlank {
+            "WhyPhyWorkoutNotifications"
+        }
+        val titulo = intent.getStringExtra("titulo").orEmpty().ifBlank { "WhyPhy" }
+        val mensagem = intent.getStringExtra("mensagem").orEmpty().ifBlank {
+            "Você tem uma atividade pendente."
+        }
+        val routePath = intent.getStringExtra("routePath").orEmpty()
+        val id = intent.getStringExtra("id").orEmpty().ifBlank {
+            "whyphy_${System.currentTimeMillis()}"
+        }
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            notificationManager.getNotificationChannel(canal) == null
+        ) {
+            notificationManager.createNotificationChannel(
+                NotificationChannel(canal, "WhyPhy", NotificationManager.IMPORTANCE_DEFAULT),
+            )
+        }
+
+        val abrirApp = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (routePath.startsWith("/") && !routePath.startsWith("//")) {
+                putExtra("routePath", routePath)
+            }
+            putExtra("title", titulo)
+            putExtra("mensagem", mensagem)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            id.hashCode(),
+            abrirApp,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(context, canal)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(context)
+        }
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(titulo)
+            .setContentText(mensagem)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(id.hashCode(), notification)
     }
 }
 
@@ -622,9 +867,26 @@ private class WebViewWhyPhy(
     }
 
     private fun configurarWebView() {
-        webView.settings.javaScriptEnabled = true
-        webView.settings.domStorageEnabled = true
-        webView.settings.setSupportMultipleWindows(false)
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        webView.setBackgroundColor(Color.BLACK)
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            cacheMode = WebSettings.LOAD_DEFAULT
+            loadsImagesAutomatically = true
+            blockNetworkImage = false
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            builtInZoomControls = false
+            displayZoomControls = false
+            textZoom = 100
+            mediaPlaybackRequiresUserGesture = false
+            setSupportMultipleWindows(false)
+        }
         webView.addJavascriptInterface(
             BridgeWhyPhyApp(
                 webView.context,
@@ -735,6 +997,55 @@ private class WebViewWhyPhy(
             @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
                 return tratarNavegacao(view.context, Uri.parse(url))
+            }
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError,
+            ) {
+                super.onReceivedError(view, request, error)
+
+                if (!request.isForMainFrame) {
+                    return
+                }
+
+                canalEventosWebview.invokeMethod(
+                    "erroWebview",
+                    mapOf(
+                        "tipo" to "offline",
+                        "mensagem" to "Verifique sua conexão e tente carregar o WhyPhy novamente.",
+                    ),
+                )
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse,
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+
+                if (!request.isForMainFrame) {
+                    return
+                }
+
+                val status = errorResponse.statusCode
+
+                if (status == 401 || status == 403) {
+                    canalEventosWebview.invokeMethod("sessaoExpiradaWebview", emptyMap<String, String>())
+                    return
+                }
+
+                if (status >= 500) {
+                    canalEventosWebview.invokeMethod(
+                        "erroWebview",
+                        mapOf(
+                            "tipo" to "servidor",
+                            "mensagem" to "O WhyPhy não respondeu agora. Tente novamente em instantes.",
+                        ),
+                    )
+                }
             }
         }
     }
@@ -1458,6 +1769,55 @@ private class BridgeWhyPhyApp(
     }
 
     @JavascriptInterface
+    fun uploadArquivo(solicitacaoJson: String) {
+        mainHandler.post {
+            val payload = try {
+                JSONObject(solicitacaoJson.ifBlank { "{}" })
+            } catch (erro: Exception) {
+                JSONObject()
+            }
+            val map = mutableMapOf<String, Any?>()
+            val keys = payload.keys()
+
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = payload.opt(key)
+                map[key] = if (value == JSONObject.NULL) null else value
+            }
+
+            if ((map["callbackId"] as? String).isNullOrBlank()) {
+                map["callbackId"] = "upload_${System.currentTimeMillis()}"
+            }
+
+            canalEventosWebview.invokeMethod("uploadNativoSolicitado", map)
+        }
+    }
+
+    @JavascriptInterface
+    fun agendarNotificacaoLocal(solicitacaoJson: String) {
+        mainHandler.post {
+            try {
+                agendarNotificacaoLocalJson(JSONObject(solicitacaoJson.ifBlank { "{}" }))
+            } catch (erro: Exception) {
+                canalEventosWebview.invokeMethod(
+                    "notificacaoWeb",
+                    mapOf(
+                        "mensagem" to "Não foi possível agendar a notificação local.",
+                        "modulo" to "",
+                    ),
+                )
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun cancelarNotificacaoLocal(id: String) {
+        mainHandler.post {
+            cancelarNotificacaoLocalId(id)
+        }
+    }
+
+    @JavascriptInterface
     fun abrirExterno(url: String) {
         mainHandler.post {
             try {
@@ -1474,6 +1834,73 @@ private class BridgeWhyPhyApp(
             }
         }
     }
+
+    private fun agendarNotificacaoLocalJson(payload: JSONObject) {
+        val id = payload.optString("id").trim().ifBlank {
+            "whyphy_${System.currentTimeMillis()}"
+        }
+        val tipo = payload.optString("tipo").lowercase(Locale.ROOT)
+        val routePath = payload.optString("routePath").trim()
+        val titulo = payload.optString("titulo").ifBlank {
+            payload.optString("title").ifBlank { "WhyPhy" }
+        }
+        val mensagem = payload.optString("mensagem").ifBlank {
+            payload.optString("body").ifBlank { "Você tem uma atividade pendente." }
+        }
+        val triggerAtMillis = payload.optLong("triggerAtMillis", 0L)
+        val delayMillis = payload.optLong("delayMillis", 0L)
+        val quando = when {
+            triggerAtMillis > 0L -> triggerAtMillis
+            delayMillis > 0L -> System.currentTimeMillis() + delayMillis
+            else -> System.currentTimeMillis()
+        }
+        val canal = if (tipo == "meal" || tipo == "refeicao" || tipo == "refeição") {
+            "WhyPhyMealNotifications"
+        } else {
+            "WhyPhyWorkoutNotifications"
+        }
+        val intent = Intent(context, NotificacaoLocalWhyPhyReceiver::class.java).apply {
+            putExtra("id", id)
+            putExtra("canal", canal)
+            putExtra("routePath", routePath)
+            putExtra("titulo", titulo)
+            putExtra("mensagem", mensagem)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        alarmManager.set(AlarmManager.RTC_WAKEUP, quando, pendingIntent)
+    }
+
+    private fun cancelarNotificacaoLocalId(id: String) {
+        val normalizado = id.trim()
+
+        if (normalizado.isEmpty()) {
+            return
+        }
+
+        val intent = Intent(context, NotificacaoLocalWhyPhyReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            normalizado.hashCode(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(normalizado.hashCode())
+    }
 }
 
 private class GerenciadorDownloadsWebview(
@@ -1484,7 +1911,9 @@ private class GerenciadorDownloadsWebview(
         try {
             val bytes = Base64.decode(base64, Base64.DEFAULT)
             val nomeFinal = normalizarNomeArquivo(nomeArquivo, extensaoParaMime(mimeType))
-            salvarBytes(nomeFinal, normalizarMime(mimeType), bytes)
+            val mimeFinal = normalizarMime(mimeType)
+            val uri = salvarBytes(nomeFinal, mimeFinal, bytes)
+            abrirArquivoSalvo(uri, mimeFinal)
             notificar("Arquivo salvo em Downloads.")
         } catch (erro: Exception) {
             notificar("Não foi possível salvar o arquivo.")
@@ -1572,7 +2001,8 @@ private class GerenciadorDownloadsWebview(
             }
 
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            downloadManager.enqueue(request)
+            val downloadId = downloadManager.enqueue(request)
+            abrirDownloadAoConcluir(downloadManager, downloadId, mimeFinal)
             notificar("Download iniciado em Downloads.")
         } catch (erro: Exception) {
             notificar("Não foi possível iniciar o download.")
@@ -1621,7 +2051,8 @@ private class GerenciadorDownloadsWebview(
                                         notificar("Não foi possível salvar o PDF.")
                                         return@renderizarPdfPorPaginas
                                     }
-                                    salvarBytes(nomeFinal, "application/pdf", bytes)
+                                    val uri = salvarBytes(nomeFinal, "application/pdf", bytes)
+                                    abrirArquivoSalvo(uri, "application/pdf")
                                     notificar("PDF salvo em Downloads.")
                                 } catch (erro: Exception) {
                                     notificar("Não foi possível salvar o PDF.")
@@ -1715,7 +2146,7 @@ private class GerenciadorDownloadsWebview(
         capturarPagina(0, 1)
     }
 
-    private fun salvarBytes(nomeArquivo: String, mimeType: String, bytes: ByteArray) {
+    private fun salvarBytes(nomeArquivo: String, mimeType: String, bytes: ByteArray): Uri? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, nomeArquivo)
@@ -1734,7 +2165,7 @@ private class GerenciadorDownloadsWebview(
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
-            return
+            return uri
         }
 
         val diretorio = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -1744,6 +2175,64 @@ private class GerenciadorDownloadsWebview(
 
         File(diretorio, nomeArquivo).outputStream().use { output ->
             output.write(bytes)
+        }
+
+        return null
+    }
+
+    private fun abrirDownloadAoConcluir(
+        downloadManager: DownloadManager,
+        downloadId: Long,
+        mimeType: String,
+    ) {
+        val appContext = context.applicationContext
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(contexto: Context, intent: Intent) {
+                val idConcluido = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+
+                if (idConcluido != downloadId) {
+                    return
+                }
+
+                try {
+                    appContext.unregisterReceiver(this)
+                } catch (erro: Exception) {
+                    // O receiver pode já ter sido removido pelo sistema.
+                }
+
+                val uri = downloadManager.getUriForDownloadedFile(downloadId)
+
+                if (!abrirArquivoSalvo(uri, mimeType)) {
+                    notificar("Arquivo salvo em Downloads.")
+                }
+            }
+        }
+        val filtro = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            appContext.registerReceiver(receiver, filtro, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            appContext.registerReceiver(receiver, filtro)
+        }
+    }
+
+    private fun abrirArquivoSalvo(uri: Uri?, mimeType: String): Boolean {
+        if (uri == null) {
+            return false
+        }
+
+        return try {
+            val intentAbrir = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, normalizarMime(mimeType))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            context.startActivity(intentAbrir)
+            true
+        } catch (erro: Exception) {
+            false
         }
     }
 

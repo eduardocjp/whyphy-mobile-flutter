@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/rotas.dart';
+import '../../nucleo/arquivos/servico_upload_mobile.dart';
+import '../../nucleo/arquivos/servico_upload_nativo.dart';
 import '../../nucleo/tema/cores_app.dart';
 import '../../nucleo/tema/espacamento_app.dart';
 import '../../nucleo/notificacoes/servico_push_mobile.dart';
@@ -16,10 +18,14 @@ class TelaShellWebview extends StatefulWidget {
     super.key,
     required this.estadoSessao,
     required this.servicoAutenticacao,
+    required this.servicoUploadMobile,
+    required this.servicoUploadNativo,
   });
 
   final EstadoSessao estadoSessao;
   final ServicoAutenticacao servicoAutenticacao;
+  final ServicoUploadMobile servicoUploadMobile;
+  final ServicoUploadNativo servicoUploadNativo;
 
   @override
   State<TelaShellWebview> createState() => _TelaShellWebviewState();
@@ -34,6 +40,7 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
   bool _logoutInterceptado = false;
   bool _logoutEmAndamento = false;
   bool _webviewCarregando = true;
+  _EstadoErroWebview? _erroWebview;
   String? _mensagemTopo;
   String? _moduloMensagemTopo;
   String? _rotaPushPendente;
@@ -95,8 +102,30 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       return;
     }
 
+    if (call.method == 'erroWebview') {
+      _mostrarErroWebview(_extrairErroWebview(call.arguments));
+      return;
+    }
+
+    if (call.method == 'sessaoExpiradaWebview') {
+      _mostrarErroWebview(
+        const _EstadoErroWebview(
+          acaoPrimaria: _AcaoErroWebview.voltarLogin,
+          descricao:
+              'Sua sessão expirou ou foi encerrada em outro dispositivo.',
+          titulo: 'Sessão expirada',
+        ),
+      );
+      return;
+    }
+
     if (call.method == 'popupNativoWeb') {
       await _mostrarPopupNativoWeb(_extrairPopupNativo(call.arguments));
+      return;
+    }
+
+    if (call.method == 'uploadNativoSolicitado') {
+      await _tratarUploadNativo(_extrairSolicitacaoUpload(call.arguments));
     }
   }
 
@@ -143,6 +172,20 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
 
     setState(() {
       _webviewCarregando = carregando;
+      if (carregando) {
+        _erroWebview = null;
+      }
+    });
+  }
+
+  void _mostrarErroWebview(_EstadoErroWebview erro) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _webviewCarregando = false;
+      _erroWebview = erro;
     });
   }
 
@@ -292,6 +335,31 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
     }
   }
 
+  Future<void> _recarregarWebview() async {
+    setState(() {
+      _erroWebview = null;
+      _webviewCarregando = true;
+    });
+
+    try {
+      final bool recarregou =
+          await _canalEventosWebview.invokeMethod<bool>('recarregarWebview') ??
+          false;
+
+      if (!mounted || recarregou) {
+        return;
+      }
+    } on PlatformException {
+      if (!mounted) {
+        return;
+      }
+    }
+
+    setState(() {
+      _webviewCarregando = false;
+    });
+  }
+
   String _resolverUrlWebview(String urlBase, String routePath) {
     final String rota = routePath.trim();
 
@@ -331,6 +399,178 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       mensagem: 'O WhyPhy precisa da sua confirmação.',
       textoPadrao: '',
       tipo: 'alerta',
+    );
+  }
+
+  _SolicitacaoUploadNativo _extrairSolicitacaoUpload(Object? arguments) {
+    if (arguments is Map<Object?, Object?>) {
+      return _SolicitacaoUploadNativo(
+        callbackId: _lerString(arguments, 'callbackId'),
+        contexto: _lerString(arguments, 'contexto'),
+        mealId: _lerString(arguments, 'mealId'),
+        mediaId: _lerString(arguments, 'mediaId'),
+        refeicaoLogId: _primeiroValorNaoVazio(<String?>[
+          _lerString(arguments, 'refeicaoLogId'),
+          _lerString(arguments, 'mealLogId'),
+        ]),
+      );
+    }
+
+    return const _SolicitacaoUploadNativo(
+      callbackId: '',
+      contexto: '',
+      mealId: '',
+      mediaId: '',
+      refeicaoLogId: '',
+    );
+  }
+
+  Future<void> _tratarUploadNativo(_SolicitacaoUploadNativo solicitacao) async {
+    if (solicitacao.callbackId.isEmpty) {
+      return;
+    }
+
+    try {
+      final ArquivoSelecionado? arquivo = await widget.servicoUploadNativo
+          .selecionarArquivo();
+
+      if (arquivo == null) {
+        await _responderUploadNativo(
+          solicitacao,
+          sucesso: false,
+          mensagem: 'Nenhum arquivo foi selecionado.',
+        );
+        return;
+      }
+
+      final ResultadoUploadMobile resultado = await _enviarUploadNativo(
+        solicitacao,
+        arquivo,
+      );
+
+      await _responderUploadNativo(
+        solicitacao,
+        corpo: resultado.corpo,
+        sucesso: resultado.sucesso,
+        mensagem: resultado.mensagem.isEmpty
+            ? (resultado.sucesso
+                  ? 'Arquivo enviado.'
+                  : 'Não foi possível enviar o arquivo.')
+            : resultado.mensagem,
+      );
+    } on PlatformException {
+      await _responderUploadNativo(
+        solicitacao,
+        sucesso: false,
+        mensagem: 'Não foi possível abrir o seletor de arquivo.',
+      );
+    }
+  }
+
+  Future<ResultadoUploadMobile> _enviarUploadNativo(
+    _SolicitacaoUploadNativo solicitacao,
+    ArquivoSelecionado arquivo,
+  ) {
+    final String contexto = solicitacao.contexto.toLowerCase();
+
+    if (contexto == 'perfil' || contexto == 'profile') {
+      return widget.servicoUploadMobile.enviarFotoPerfil(arquivo);
+    }
+
+    if (contexto == 'meal' ||
+        contexto == 'refeicao' ||
+        contexto == 'refeição') {
+      if (solicitacao.refeicaoLogId.isEmpty) {
+        return Future<ResultadoUploadMobile>.value(
+          const ResultadoUploadMobile(
+            corpo: '',
+            mensagem: 'Identificador da refeição não informado.',
+            sucesso: false,
+          ),
+        );
+      }
+
+      return widget.servicoUploadMobile.enviarFotoRefeicao(
+        arquivo: arquivo,
+        mealId: solicitacao.mealId,
+        refeicaoLogId: solicitacao.refeicaoLogId,
+      );
+    }
+
+    if (contexto == 'fisico' ||
+        contexto == 'físico' ||
+        contexto == 'evolucao' ||
+        contexto == 'evolução' ||
+        contexto == 'physical') {
+      if (solicitacao.mediaId.isNotEmpty) {
+        return widget.servicoUploadMobile.atualizarFotoFisica(
+          arquivo: arquivo,
+          mediaId: solicitacao.mediaId,
+        );
+      }
+
+      return widget.servicoUploadMobile.enviarFotoFisica(arquivo);
+    }
+
+    if (contexto == 'exame' || contexto == 'exam') {
+      return widget.servicoUploadMobile.enviarExames(<ArquivoSelecionado>[
+        arquivo,
+      ]);
+    }
+
+    return Future<ResultadoUploadMobile>.value(
+      const ResultadoUploadMobile(
+        corpo: '',
+        mensagem: 'Contexto de upload não suportado pelo app.',
+        sucesso: false,
+      ),
+    );
+  }
+
+  Future<void> _responderUploadNativo(
+    _SolicitacaoUploadNativo solicitacao, {
+    String corpo = '',
+    required String mensagem,
+    required bool sucesso,
+  }) async {
+    await _canalEventosWebview
+        .invokeMethod<void>('responderUploadNativo', <String, Object?>{
+          'callbackId': solicitacao.callbackId,
+          'contexto': solicitacao.contexto,
+          'corpo': corpo,
+          'mensagem': mensagem,
+          'sucesso': sucesso,
+        });
+  }
+
+  _EstadoErroWebview _extrairErroWebview(Object? arguments) {
+    if (arguments is Map<Object?, Object?>) {
+      final String tipo = _lerString(arguments, 'tipo');
+      final String descricao = _lerString(arguments, 'mensagem');
+
+      if (tipo == 'offline') {
+        return _EstadoErroWebview(
+          acaoPrimaria: _AcaoErroWebview.tentarNovamente,
+          descricao: descricao.isEmpty
+              ? 'Verifique sua conexão e tente carregar o WhyPhy novamente.'
+              : descricao,
+          titulo: 'Sem conexão',
+        );
+      }
+
+      return _EstadoErroWebview(
+        acaoPrimaria: _AcaoErroWebview.tentarNovamente,
+        descricao: descricao.isEmpty
+            ? 'Não foi possível carregar o WhyPhy agora.'
+            : descricao,
+        titulo: 'Erro ao carregar',
+      );
+    }
+
+    return const _EstadoErroWebview(
+      acaoPrimaria: _AcaoErroWebview.tentarNovamente,
+      descricao: 'Não foi possível carregar o WhyPhy agora.',
+      titulo: 'Erro ao carregar',
     );
   }
 
@@ -453,6 +693,14 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
         _buildConteudo(context, sessao),
         if (temWebviewAutenticada && _webviewCarregando)
           const _CarregamentoWebview(),
+        if (_erroWebview != null)
+          _TelaErroWebview(
+            estado: _erroWebview!,
+            onAcaoPrimaria:
+                _erroWebview!.acaoPrimaria == _AcaoErroWebview.voltarLogin
+                ? _voltarParaLoginAposLogoutWeb
+                : _recarregarWebview,
+          ),
         if (_logoutEmAndamento)
           const _CarregamentoWebview(
             descricao: 'Limpando o acesso e voltando para o login seguro.',
@@ -543,6 +791,36 @@ class _CargaPushAberta {
 
   final String mensagem;
   final String routePath;
+}
+
+class _SolicitacaoUploadNativo {
+  const _SolicitacaoUploadNativo({
+    required this.callbackId,
+    required this.contexto,
+    required this.mealId,
+    required this.mediaId,
+    required this.refeicaoLogId,
+  });
+
+  final String callbackId;
+  final String contexto;
+  final String mealId;
+  final String mediaId;
+  final String refeicaoLogId;
+}
+
+enum _AcaoErroWebview { tentarNovamente, voltarLogin }
+
+class _EstadoErroWebview {
+  const _EstadoErroWebview({
+    required this.acaoPrimaria,
+    required this.descricao,
+    required this.titulo,
+  });
+
+  final _AcaoErroWebview acaoPrimaria;
+  final String descricao;
+  final String titulo;
 }
 
 class _PopupNativoWeb {
@@ -701,6 +979,97 @@ class _ModalPopupNativoWebState extends State<_ModalPopupNativoWeb> {
                   child: const Text('Entendi'),
                 ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TelaErroWebview extends StatelessWidget {
+  const _TelaErroWebview({required this.estado, required this.onAcaoPrimaria});
+
+  final _EstadoErroWebview estado;
+  final VoidCallback onAcaoPrimaria;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textos = Theme.of(context).textTheme;
+    final bool voltarLogin =
+        estado.acaoPrimaria == _AcaoErroWebview.voltarLogin;
+
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: <Color>[CoresApp.fundo, CoresApp.superficie, CoresApp.fundo],
+        ),
+      ),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(EspacamentoApp.grande),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 380),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: CoresApp.superficieElevada,
+                border: Border.all(color: CoresApp.borda),
+                borderRadius: const BorderRadius.all(Radius.circular(24)),
+                boxShadow: const <BoxShadow>[
+                  BoxShadow(
+                    color: Color(0x99000000),
+                    blurRadius: 28,
+                    offset: Offset(0, 18),
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(EspacamentoApp.grande),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    const Align(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.all(Radius.circular(18)),
+                        child: Image(
+                          image: AssetImage('assets/logo.png'),
+                          width: 54,
+                          height: 54,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: EspacamentoApp.grande),
+                    Text(
+                      estado.titulo,
+                      style: textos.titleLarge?.copyWith(
+                        color: CoresApp.textoPrincipal,
+                        fontWeight: FontWeight.w900,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: EspacamentoApp.pequeno),
+                    Text(
+                      estado.descricao,
+                      style: textos.bodyMedium?.copyWith(
+                        color: CoresApp.textoSecundario,
+                        height: 1.35,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: EspacamentoApp.grande),
+                    FilledButton(
+                      onPressed: onAcaoPrimaria,
+                      child: Text(
+                        voltarLogin ? 'Entrar novamente' : 'Tentar novamente',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
       ),

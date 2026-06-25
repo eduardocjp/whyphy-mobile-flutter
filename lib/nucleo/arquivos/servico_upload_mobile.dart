@@ -188,7 +188,7 @@ class ServicoUploadMobile {
       'accept': 'application/json',
       'authorization': 'Bearer $accessToken',
       'x-device-id': deviceId!,
-      'x-whyphy-app': 'flutter',
+      'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
     };
   }
 
