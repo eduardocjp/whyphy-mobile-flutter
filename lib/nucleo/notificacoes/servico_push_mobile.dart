@@ -83,7 +83,7 @@ class ServicoPushMobile implements ServicoPush {
       }
 
       return RegistroPush(
-        appVersion: null,
+        appVersion: ConfiguracaoApp.versaoApp,
         plataforma: plataforma,
         token: token,
       );
@@ -187,7 +187,7 @@ class ServicoPushMobile implements ServicoPush {
         unawaited(
           registrar(
             RegistroPush(
-              appVersion: null,
+              appVersion: ConfiguracaoApp.versaoApp,
               plataforma: _plataformaAtual(),
               token: tokenNormalizado,
             ),
@@ -328,7 +328,7 @@ class ServicoPushMobile implements ServicoPush {
       'accept': 'application/json',
       'authorization': 'Bearer $accessToken',
       'x-device-id': deviceId,
-      'x-whyphy-app': 'flutter',
+      'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
     };
   }
 

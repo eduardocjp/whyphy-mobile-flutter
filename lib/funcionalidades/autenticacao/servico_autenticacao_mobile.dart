@@ -242,7 +242,7 @@ class ServicoAutenticacaoMobile implements ServicoAutenticacao {
   Map<String, String> _headersBase() {
     return const <String, String>{
       'accept': 'application/json',
-      'x-whyphy-app': 'flutter',
+      'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
     };
   }
 

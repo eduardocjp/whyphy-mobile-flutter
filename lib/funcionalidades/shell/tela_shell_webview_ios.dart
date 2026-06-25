@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../app/configuracao_app.dart';
 import '../../app/rotas.dart';
 import '../../nucleo/notificacoes/servico_push_mobile.dart';
 import '../../nucleo/tema/cores_app.dart';
@@ -357,7 +358,7 @@ class _TelaShellWebviewIOSState extends State<TelaShellWebviewIOS> {
     return <String, String>{
       'Authorization': 'Bearer ${sessao.accessToken}',
       'x-device-id': sessao.deviceId,
-      'x-whyphy-app': 'flutter-webview-ios',
+      'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
     };
   }
 

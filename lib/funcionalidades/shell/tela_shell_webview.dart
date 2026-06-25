@@ -33,7 +33,6 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
   bool _atualizando = false;
   bool _logoutInterceptado = false;
   bool _logoutEmAndamento = false;
-  int _versaoNavegacaoPush = 0;
   bool _webviewCarregando = true;
   String? _mensagemTopo;
   String? _moduloMensagemTopo;
@@ -177,7 +176,9 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       _logoutEmAndamento = true;
     });
 
+    await _limparCookiesWebview();
     await widget.servicoAutenticacao.sair();
+    await _limparCookiesWebview();
 
     if (!mounted) {
       return;
@@ -250,8 +251,69 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
 
     setState(() {
       _rotaPushPendente = carga.routePath;
-      _versaoNavegacaoPush += 1;
+      _webviewCarregando = true;
     });
+
+    unawaited(_navegarWebview(carga.routePath));
+  }
+
+  Future<void> _navegarWebview(String routePath) async {
+    final SessaoWhyPhy? sessao = widget.estadoSessao.sessaoAtual;
+    final bootstrap = sessao?.bootstrap;
+
+    if (bootstrap == null) {
+      return;
+    }
+
+    try {
+      final bool navegou =
+          await _canalEventosWebview
+              .invokeMethod<bool>('navegarWebview', <String, Object?>{
+                'routePath': routePath,
+                'url': _resolverUrlWebview(bootstrap.webviewUrl, routePath),
+              }) ??
+          false;
+
+      if (!mounted || navegou) {
+        return;
+      }
+
+      setState(() {
+        _webviewCarregando = false;
+      });
+    } on PlatformException {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _webviewCarregando = false;
+      });
+    }
+  }
+
+  String _resolverUrlWebview(String urlBase, String routePath) {
+    final String rota = routePath.trim();
+
+    if (!_rotaInternaValida(rota)) {
+      return urlBase;
+    }
+
+    final Uri uriBase = Uri.parse(urlBase);
+    final Map<String, String> query = <String, String>{
+      ...uriBase.queryParameters,
+      'next': rota,
+    };
+
+    return uriBase.replace(queryParameters: query).toString();
+  }
+
+  Future<void> _limparCookiesWebview() async {
+    try {
+      await _canalEventosWebview.invokeMethod<void>('limparCookiesWebview');
+    } on PlatformException {
+      return;
+    }
   }
 
   _PopupNativoWeb _extrairPopupNativo(Object? arguments) {
@@ -429,7 +491,6 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       return WebviewWhyPhyAndroid(
         sessao: sessao!,
         rotaInterna: _rotaPushPendente,
-        versaoNavegacao: _versaoNavegacaoPush,
       );
     }
 

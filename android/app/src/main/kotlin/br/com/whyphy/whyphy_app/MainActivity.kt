@@ -28,6 +28,7 @@ import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.view.ViewGroup
@@ -53,6 +54,8 @@ class MainActivity : FlutterActivity() {
     private var permissaoCameraPendente: PermissionRequest? = null
     private var payloadPushPendente: Map<String, String>? = null
     private var webViewAtiva: WebView? = null
+    private var webViewAllowedHostAtivo: String = ""
+    private var webViewHeadersAtivos: Map<String, String> = emptyMap()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -105,6 +108,19 @@ class MainActivity : FlutterActivity() {
                 }
                 "voltarWebview" -> {
                     result.success(voltarWebviewAtiva())
+                }
+                "podeVoltarWebview" -> {
+                    result.success(webViewAtiva?.canGoBack() == true)
+                }
+                "navegarWebview" -> {
+                    result.success(navegarWebviewAtiva(call.argument<String>("url")))
+                }
+                "recarregarWebview" -> {
+                    result.success(recarregarWebviewAtiva())
+                }
+                "limparCookiesWebview" -> {
+                    limparCookiesWebviewAtiva()
+                    result.success(null)
                 }
                 else -> result.notImplemented()
             }
@@ -224,13 +240,21 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    fun registrarWebViewAtiva(webView: WebView) {
+    fun registrarWebViewAtiva(
+        webView: WebView,
+        allowedHost: String,
+        headers: Map<String, String>,
+    ) {
         webViewAtiva = webView
+        webViewAllowedHostAtivo = allowedHost
+        webViewHeadersAtivos = headers
     }
 
     fun limparWebViewAtiva(webView: WebView) {
         if (webViewAtiva == webView) {
             webViewAtiva = null
+            webViewAllowedHostAtivo = ""
+            webViewHeadersAtivos = emptyMap()
         }
     }
 
@@ -256,6 +280,59 @@ class MainActivity : FlutterActivity() {
 
         webView.goBack()
         return true
+    }
+
+    private fun navegarWebviewAtiva(url: String?): Boolean {
+        val webView = webViewAtiva ?: return false
+        val uri = Uri.parse(url?.trim().orEmpty())
+        val scheme = uri.scheme.orEmpty()
+
+        if ((scheme != "http" && scheme != "https") || !hostPermitidoWebviewAtiva(uri.host.orEmpty())) {
+            return false
+        }
+
+        webView.visibility = View.VISIBLE
+        webView.alpha = 1f
+        webView.isClickable = true
+        webView.isFocusable = true
+        webView.loadUrl(uri.toString(), webViewHeadersAtivos)
+
+        return true
+    }
+
+    private fun recarregarWebviewAtiva(): Boolean {
+        val webView = webViewAtiva ?: return false
+        webView.reload()
+        return true
+    }
+
+    private fun limparCookiesWebviewAtiva() {
+        val webView = webViewAtiva
+
+        webView?.stopLoading()
+        webView?.clearHistory()
+        webView?.clearCache(true)
+        webView?.clearFormData()
+        WebStorage.getInstance().deleteAllData()
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+    }
+
+    private fun hostPermitidoWebviewAtiva(host: String): Boolean {
+        if (host.isBlank()) {
+            return false
+        }
+
+        if (host == webViewAllowedHostAtivo) {
+            return true
+        }
+
+        val dominioPrincipal = "whyphy.com.br"
+        val ambienteWhyPhy = webViewAllowedHostAtivo == dominioPrincipal ||
+            webViewAllowedHostAtivo.endsWith(".$dominioPrincipal")
+
+        return ambienteWhyPhy &&
+            (host == dominioPrincipal || host.endsWith(".$dominioPrincipal"))
     }
 
     private fun tratarVoltarFisicoAndroid() {
@@ -529,7 +606,7 @@ private class WebViewWhyPhy(
     private var logoutVisualOcultado = false
 
     init {
-        activity.registrarWebViewAtiva(webView)
+        activity.registrarWebViewAtiva(webView, allowedHost, initialHeaders)
         configurarWebView()
         webView.loadUrl(url, initialHeaders)
     }
@@ -550,6 +627,7 @@ private class WebViewWhyPhy(
         webView.settings.setSupportMultipleWindows(false)
         webView.addJavascriptInterface(
             BridgeWhyPhyApp(
+                webView.context,
                 canalEventosWebview,
                 gerenciadorDownloads,
                 initialHeaders,
@@ -1281,6 +1359,7 @@ private class WebViewWhyPhy(
 }
 
 private class BridgeWhyPhyApp(
+    private val context: Context,
     private val canalEventosWebview: MethodChannel,
     private val gerenciadorDownloads: GerenciadorDownloadsWebview,
     private val headers: Map<String, String>,
@@ -1375,6 +1454,24 @@ private class BridgeWhyPhyApp(
                 nomeArquivo = nomeArquivo,
                 html = html,
             )
+        }
+    }
+
+    @JavascriptInterface
+    fun abrirExterno(url: String) {
+        mainHandler.post {
+            try {
+                val uri = Uri.parse(url.trim())
+                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            } catch (erro: Exception) {
+                canalEventosWebview.invokeMethod(
+                    "notificacaoWeb",
+                    mapOf(
+                        "mensagem" to "Não foi possível abrir este link fora do app.",
+                        "modulo" to "",
+                    ),
+                )
+            }
         }
     }
 }

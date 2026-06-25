@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app/configuracao_app.dart';
 import '../../funcionalidades/autenticacao/estado_sessao.dart';
 import '../tema/cores_app.dart';
 
@@ -11,12 +12,10 @@ class WebviewWhyPhyAndroid extends StatelessWidget {
     super.key,
     required this.sessao,
     this.rotaInterna,
-    this.versaoNavegacao = 0,
   });
 
   final SessaoWhyPhy sessao;
   final String? rotaInterna;
-  final int versaoNavegacao;
 
   String _resolverUrlWebview(String urlBase) {
     final String rota = (rotaInterna ?? '').trim();
@@ -55,14 +54,14 @@ class WebviewWhyPhyAndroid extends StatelessWidget {
     final String webviewUrl = _resolverUrlWebview(bootstrap.webviewUrl);
 
     return AndroidView(
-      key: ValueKey<String>('${versaoNavegacao}_$webviewUrl'),
+      key: const ValueKey<String>('whyphy-webview-android'),
       viewType: 'br.com.whyphy/webview',
       creationParams: <String, Object?>{
         'allowedHost': Uri.parse(webviewUrl).host,
         'initialHeaders': <String, String>{
           'authorization': 'Bearer ${sessao.accessToken}',
           'x-device-id': sessao.deviceId,
-          'x-whyphy-app': 'flutter-webview',
+          'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
         },
         'url': webviewUrl,
       },

@@ -4,6 +4,13 @@ import 'package:flutter/foundation.dart';
 class ConfiguracaoApp {
   const ConfiguracaoApp({required this.dominioWeb, required this.apiBaseUrl});
 
+  static const String identificadorAppWebview = 'flutter-webview';
+
+  static const String versaoApp = String.fromEnvironment(
+    'WHY_PHY_APP_VERSION',
+    defaultValue: '1.0.0',
+  );
+
   static const String _dominioPadrao = String.fromEnvironment(
     'WHY_PHY_WEB_BASE_URL',
     defaultValue: 'https://www.whyphy.com.br',
