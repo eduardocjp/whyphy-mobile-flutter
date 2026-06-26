@@ -1,5 +1,6 @@
 package br.com.whyphy.whyphy_app
 
+import android.util.Log
 import android.Manifest
 import android.app.Activity
 import android.app.AlarmManager
@@ -81,6 +82,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         criarCanaisNotificacaoLocal()
+        garantirPermissaoNotificacaoLocal()
 
         val armazenamento = ArmazenamentoSeguroWhyPhy(applicationContext)
 
@@ -257,6 +259,17 @@ class MainActivity : FlutterActivity() {
         )
 
         canais.forEach(notificationManager::createNotificationChannel)
+    }
+
+    private fun garantirPermissaoNotificacaoLocal() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                REQUEST_NOTIFICACAO_PERMISSION,
+            )
+        }
     }
 
     fun abrirSeletorArquivo(
@@ -625,6 +638,9 @@ class MainActivity : FlutterActivity() {
                     request?.deny()
                 }
             }
+            REQUEST_NOTIFICACAO_PERMISSION -> {
+                Log.d("WhyPhyLocalNotif", "permissao POST_NOTIFICATIONS concedida=$permitido")
+            }
         }
     }
 
@@ -680,6 +696,7 @@ class MainActivity : FlutterActivity() {
         const val REQUEST_CAMERA_PERMISSION_FILE_CHOOSER = 9002
         const val REQUEST_CAMERA_PERMISSION_WEBVIEW = 9003
         const val REQUEST_UPLOAD_NATIVO = 9004
+        const val REQUEST_NOTIFICACAO_PERMISSION = 9005
         const val CANAL_NOTIFICACAO_TREINO = "WhyPhyWorkoutNotifications"
         const val CANAL_NOTIFICACAO_REFEICAO = "WhyPhyMealNotifications"
     }
@@ -698,6 +715,12 @@ class NotificacaoLocalWhyPhyReceiver : BroadcastReceiver() {
         val id = intent.getStringExtra("id").orEmpty().ifBlank {
             "whyphy_${System.currentTimeMillis()}"
         }
+
+        Log.d(
+            "WhyPhyLocalNotif",
+            "receiver disparou id=$id canal=$canal route=$routePath",
+        )
+
         AgendadorNotificacaoLocalWhyPhy.removerPersistido(context, id)
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -818,29 +841,89 @@ private object AgendadorNotificacaoLocalWhyPhy {
         canais.forEach(notificationManager::createNotificationChannel)
     }
 
-    fun agendar(context: Context, agendamento: AgendamentoNotificacaoLocal, persistir: Boolean = true) {
-        val appContext = context.applicationContext
-        val pendingIntent = criarPendingIntent(appContext, agendamento, PendingIntent.FLAG_UPDATE_CURRENT)
-        val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    fun agendar(
+    context: Context,
+    agendamento: AgendamentoNotificacaoLocal,
+    persistir: Boolean = true,
+) {
+    val appContext = context.applicationContext
+    val pendingIntent = criarPendingIntent(
+        appContext,
+        agendamento,
+        PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        if (persistir && agendamento.quandoMillis > System.currentTimeMillis()) {
-            salvar(appContext, agendamento)
-        }
+    Log.d(
+        "WhyPhyLocalNotif",
+        "agendando id=${agendamento.id} canal=${agendamento.canal} quando=${agendamento.quandoMillis} route=${agendamento.routePath}",
+    )
 
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+    if (persistir && agendamento.quandoMillis > System.currentTimeMillis()) {
+        salvar(appContext, agendamento)
+    }
+
+    try {
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                alarmManager.canScheduleExactAlarms() -> {
+                Log.d("WhyPhyLocalNotif", "usando setExactAndAllowWhileIdle com permissão exata")
+
                 alarmManager.setExactAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
                     agendamento.quandoMillis,
                     pendingIntent,
                 )
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, agendamento.quandoMillis, pendingIntent)
             }
-        } catch (erro: SecurityException) {
-            alarmManager.set(AlarmManager.RTC_WAKEUP, agendamento.quandoMillis, pendingIntent)
+
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                Log.d("WhyPhyLocalNotif", "sem permissão de alarme exato, usando setAndAllowWhileIdle")
+
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    agendamento.quandoMillis,
+                    pendingIntent,
+                )
+            }
+
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
+                Log.d("WhyPhyLocalNotif", "usando setExactAndAllowWhileIdle API M+")
+
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    agendamento.quandoMillis,
+                    pendingIntent,
+                )
+            }
+
+            else -> {
+                Log.d("WhyPhyLocalNotif", "usando setExact API antiga")
+
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    agendamento.quandoMillis,
+                    pendingIntent,
+                )
+            }
+        }
+    } catch (erro: SecurityException) {
+        Log.e("WhyPhyLocalNotif", "falhou alarme exato, usando fallback", erro)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                agendamento.quandoMillis,
+                pendingIntent,
+            )
+        } else {
+            alarmManager.set(
+                AlarmManager.RTC_WAKEUP,
+                agendamento.quandoMillis,
+                pendingIntent,
+            )
         }
     }
+}
 
     fun cancelar(context: Context, id: String) {
         val normalizado = id.trim()
@@ -848,6 +931,8 @@ private object AgendadorNotificacaoLocalWhyPhy {
         if (normalizado.isEmpty()) {
             return
         }
+
+        Log.d("WhyPhyLocalNotif", "cancelando id=$normalizado")
 
         removerPersistido(context, normalizado)
 
@@ -1210,6 +1295,7 @@ private class WebViewWhyPhy(
                 injetarInterceptadorDownloads(view)
                 injetarInterceptadorDeAvisos(view)
                 notificarCarregamento(iniciado = false)
+                injetarBridgeNotificacoesLocais(view)
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
@@ -1885,6 +1971,60 @@ private class WebViewWhyPhy(
         view.evaluateJavascript(script, null)
     }
 
+    private fun injetarBridgeNotificacoesLocais(view: WebView) {
+        val script = """
+            (function() {
+              if (window.__whyphyAppLocalNotificationBridge) return;
+              window.__whyphyAppLocalNotificationBridge = true;
+
+              function enviarParaApp(payload) {
+                try {
+                  var texto = typeof payload === "string"
+                    ? payload
+                    : JSON.stringify(payload || {});
+
+                  if (window.WhyPhyApp && window.WhyPhyApp.agendarNotificacaoLocal) {
+                    window.WhyPhyApp.agendarNotificacaoLocal(texto);
+                    return true;
+                  }
+                } catch (erro) {}
+                return false;
+              }
+
+              function cancelarNoApp(id) {
+                try {
+                  if (window.WhyPhyApp && window.WhyPhyApp.cancelarNotificacaoLocal) {
+                    window.WhyPhyApp.cancelarNotificacaoLocal(String(id || ""));
+                    return true;
+                  }
+                } catch (erro) {}
+                return false;
+              }
+
+              window.WhyPhyWorkoutNotifications = window.WhyPhyWorkoutNotifications || {};
+              window.WhyPhyMealNotifications = window.WhyPhyMealNotifications || {};
+
+              window.WhyPhyWorkoutNotifications.postMessage = function(payload) {
+                return enviarParaApp(payload);
+              };
+
+              window.WhyPhyMealNotifications.postMessage = function(payload) {
+                return enviarParaApp(payload);
+              };
+
+              window.WhyPhyWorkoutNotifications.cancel = function(id) {
+                return cancelarNoApp(id);
+              };
+
+              window.WhyPhyMealNotifications.cancel = function(id) {
+                return cancelarNoApp(id);
+              };
+            })();
+        """.trimIndent()
+
+        view.evaluateJavascript(script, null)
+    }
+
     private fun ehRotaLogout(uri: Uri): Boolean {
         if (!hostPermitido(uri.host.orEmpty())) {
             return false
@@ -2025,23 +2165,28 @@ private class BridgeWhyPhyApp(
 
     @JavascriptInterface
     fun agendarNotificacaoLocal(solicitacaoJson: String) {
-        mainHandler.post {
-            try {
-                agendarNotificacaoLocalJson(JSONObject(solicitacaoJson.ifBlank { "{}" }))
-            } catch (erro: Exception) {
-                canalEventosWebview.invokeMethod(
-                    "notificacaoWeb",
-                    mapOf(
-                        "mensagem" to "Não foi possível agendar a notificação local.",
-                        "modulo" to "",
-                    ),
-                )
-            }
+    Log.d("WhyPhyLocalNotif", "bridge agendarNotificacaoLocal: $solicitacaoJson")
+
+    mainHandler.post {
+        try {
+            agendarNotificacaoLocalJson(JSONObject(solicitacaoJson.ifBlank { "{}" }))
+        } catch (erro: Exception) {
+            Log.e("WhyPhyLocalNotif", "erro ao agendar", erro)
+            canalEventosWebview.invokeMethod(
+                "notificacaoWeb",
+                mapOf(
+                    "mensagem" to "Não foi possível agendar a notificação local.",
+                    "modulo" to "",
+                ),
+            )
+        }
         }
     }
 
     @JavascriptInterface
     fun cancelarNotificacaoLocal(id: String) {
+        Log.d("WhyPhyLocalNotif", "bridge cancelarNotificacaoLocal: $id")
+
         mainHandler.post {
             cancelarNotificacaoLocalId(id)
         }
@@ -2603,7 +2748,6 @@ private class GerenciadorPopupsWebview(
             textoPadrao = textoPadrao,
         )
     }
-
     fun responder(id: String?, confirmado: Boolean, texto: String?) {
         if (id.isNullOrBlank()) {
             return
