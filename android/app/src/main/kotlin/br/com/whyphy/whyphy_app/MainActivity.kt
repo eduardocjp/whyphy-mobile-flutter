@@ -52,13 +52,20 @@ import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
 import java.security.KeyStore
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+
+private const val CANAL_NOTIFICACAO_TREINO_LOCAL = "WhyPhyWorkoutNotifications"
+private const val CANAL_NOTIFICACAO_REFEICAO_LOCAL = "WhyPhyMealNotifications"
+private const val PREFS_NOTIFICACOES_LOCAIS = "whyphy_notificacoes_locais"
+private const val PREFS_AGENDAMENTOS_NOTIFICACAO = "agendamentos"
 
 class MainActivity : FlutterActivity() {
     private var arquivoSelecionadoCallback: ValueCallback<Array<Uri>>? = null
@@ -681,7 +688,7 @@ class MainActivity : FlutterActivity() {
 class NotificacaoLocalWhyPhyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val canal = intent.getStringExtra("canal").orEmpty().ifBlank {
-            "WhyPhyWorkoutNotifications"
+            CANAL_NOTIFICACAO_TREINO_LOCAL
         }
         val titulo = intent.getStringExtra("titulo").orEmpty().ifBlank { "WhyPhy" }
         val mensagem = intent.getStringExtra("mensagem").orEmpty().ifBlank {
@@ -691,6 +698,7 @@ class NotificacaoLocalWhyPhyReceiver : BroadcastReceiver() {
         val id = intent.getStringExtra("id").orEmpty().ifBlank {
             "whyphy_${System.currentTimeMillis()}"
         }
+        AgendadorNotificacaoLocalWhyPhy.removerPersistido(context, id)
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -731,6 +739,228 @@ class NotificacaoLocalWhyPhyReceiver : BroadcastReceiver() {
 
         notificationManager.notify(id.hashCode(), notification)
     }
+}
+
+class BootWhyPhyReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+            AgendadorNotificacaoLocalWhyPhy.reagendarPendentes(context)
+        }
+    }
+}
+
+private data class AgendamentoNotificacaoLocal(
+    val id: String,
+    val canal: String,
+    val routePath: String,
+    val titulo: String,
+    val mensagem: String,
+    val quandoMillis: Long,
+) {
+    fun paraJson(): JSONObject {
+        return JSONObject()
+            .put("id", id)
+            .put("canal", canal)
+            .put("routePath", routePath)
+            .put("titulo", titulo)
+            .put("mensagem", mensagem)
+            .put("quandoMillis", quandoMillis)
+    }
+
+    companion object {
+        fun deJson(payload: JSONObject): AgendamentoNotificacaoLocal? {
+            val id = payload.optString("id").trim()
+            val canal = payload.optString("canal").trim()
+            val quandoMillis = payload.optLong("quandoMillis", 0L)
+
+            if (id.isEmpty() || canal.isEmpty() || quandoMillis <= 0L) {
+                return null
+            }
+
+            return AgendamentoNotificacaoLocal(
+                id = id,
+                canal = canal,
+                routePath = payload.optString("routePath").trim(),
+                titulo = payload.optString("titulo").ifBlank { "WhyPhy" },
+                mensagem = payload.optString("mensagem").ifBlank {
+                    "Você tem uma atividade pendente."
+                },
+                quandoMillis = quandoMillis,
+            )
+        }
+    }
+}
+
+private object AgendadorNotificacaoLocalWhyPhy {
+    fun criarCanais(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        val canais = listOf(
+            NotificationChannel(
+                CANAL_NOTIFICACAO_TREINO_LOCAL,
+                "WhyPhy treinos",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Alertas locais de treino do WhyPhy."
+            },
+            NotificationChannel(
+                CANAL_NOTIFICACAO_REFEICAO_LOCAL,
+                "WhyPhy refeições",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Alertas locais de refeição do WhyPhy."
+            },
+        )
+
+        canais.forEach(notificationManager::createNotificationChannel)
+    }
+
+    fun agendar(context: Context, agendamento: AgendamentoNotificacaoLocal, persistir: Boolean = true) {
+        val appContext = context.applicationContext
+        val pendingIntent = criarPendingIntent(appContext, agendamento, PendingIntent.FLAG_UPDATE_CURRENT)
+        val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        if (persistir && agendamento.quandoMillis > System.currentTimeMillis()) {
+            salvar(appContext, agendamento)
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    agendamento.quandoMillis,
+                    pendingIntent,
+                )
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, agendamento.quandoMillis, pendingIntent)
+            }
+        } catch (erro: SecurityException) {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, agendamento.quandoMillis, pendingIntent)
+        }
+    }
+
+    fun cancelar(context: Context, id: String) {
+        val normalizado = id.trim()
+
+        if (normalizado.isEmpty()) {
+            return
+        }
+
+        removerPersistido(context, normalizado)
+
+        val intent = Intent(context.applicationContext, NotificacaoLocalWhyPhyReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            context.applicationContext,
+            normalizado.hashCode(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(normalizado.hashCode())
+    }
+
+    fun removerPersistido(context: Context, id: String) {
+        val agendamentos = lerAgendamentos(context).apply {
+            remove(id)
+        }
+        salvarAgendamentos(context, agendamentos)
+    }
+
+    fun reagendarPendentes(context: Context) {
+        criarCanais(context)
+
+        val agora = System.currentTimeMillis()
+        val agendamentos = lerAgendamentos(context)
+        val pendentes = linkedMapOf<String, AgendamentoNotificacaoLocal>()
+
+        agendamentos.values.forEach { agendamento ->
+            if (agendamento.quandoMillis > agora) {
+                pendentes[agendamento.id] = agendamento
+                agendar(context, agendamento, persistir = false)
+            }
+        }
+
+        salvarAgendamentos(context, pendentes)
+    }
+
+    private fun criarPendingIntent(
+        context: Context,
+        agendamento: AgendamentoNotificacaoLocal,
+        flagAtualizacao: Int,
+    ): PendingIntent {
+        val intent = Intent(context, NotificacaoLocalWhyPhyReceiver::class.java).apply {
+            putExtra("id", agendamento.id)
+            putExtra("canal", agendamento.canal)
+            putExtra("routePath", agendamento.routePath)
+            putExtra("titulo", agendamento.titulo)
+            putExtra("mensagem", agendamento.mensagem)
+        }
+
+        return PendingIntent.getBroadcast(
+            context,
+            agendamento.id.hashCode(),
+            intent,
+            flagAtualizacao or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun salvar(context: Context, agendamento: AgendamentoNotificacaoLocal) {
+        val agendamentos = lerAgendamentos(context).apply {
+            put(agendamento.id, agendamento)
+        }
+        salvarAgendamentos(context, agendamentos)
+    }
+
+    private fun lerAgendamentos(context: Context): MutableMap<String, AgendamentoNotificacaoLocal> {
+        val raw = preferencias(context).getString(PREFS_AGENDAMENTOS_NOTIFICACAO, "{}").orEmpty()
+        val json = try {
+            JSONObject(raw)
+        } catch (erro: Exception) {
+            JSONObject()
+        }
+        val agendamentos = linkedMapOf<String, AgendamentoNotificacaoLocal>()
+        val keys = json.keys()
+
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val agendamento = json.optJSONObject(key)?.let(AgendamentoNotificacaoLocal::deJson)
+
+            if (agendamento != null) {
+                agendamentos[agendamento.id] = agendamento
+            }
+        }
+
+        return agendamentos
+    }
+
+    private fun salvarAgendamentos(
+        context: Context,
+        agendamentos: Map<String, AgendamentoNotificacaoLocal>,
+    ) {
+        val json = JSONObject()
+
+        agendamentos.forEach { (id, agendamento) ->
+            json.put(id, agendamento.paraJson())
+        }
+
+        preferencias(context)
+            .edit()
+            .putString(PREFS_AGENDAMENTOS_NOTIFICACAO, json.toString())
+            .apply()
+    }
+
+    private fun preferencias(context: Context) =
+        context.applicationContext.getSharedPreferences(PREFS_NOTIFICACOES_LOCAIS, Context.MODE_PRIVATE)
 }
 
 private class ArmazenamentoSeguroWhyPhy(context: Context) {
@@ -1817,6 +2047,61 @@ private class BridgeWhyPhyApp(
         }
     }
 
+    private fun idNotificacaoPayload(payload: JSONObject): String? {
+        val notificationId = payload.optString("notificationId").trim()
+
+        if (notificationId.isNotEmpty()) {
+            return notificationId
+        }
+
+        return payload.optString("id").trim().ifBlank { null }
+    }
+
+    private fun horarioNotificacaoPayload(payload: JSONObject): Long {
+        val triggerAtMillis = payload.optLong("triggerAtMillis", 0L)
+        val delayMillis = payload.optLong("delayMillis", 0L)
+
+        if (triggerAtMillis > 0L) {
+            return triggerAtMillis
+        }
+
+        if (delayMillis > 0L) {
+            return System.currentTimeMillis() + delayMillis
+        }
+
+        return parsearTriggerAtIso(payload.optString("triggerAt")) ?: System.currentTimeMillis()
+    }
+
+    private fun parsearTriggerAtIso(triggerAt: String): Long? {
+        val valor = triggerAt.trim()
+
+        if (valor.isEmpty()) {
+            return null
+        }
+
+        val formatos = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+            "yyyy-MM-dd'T'HH:mm:ssX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+        )
+
+        formatos.forEach { formato ->
+            try {
+                val parser = SimpleDateFormat(formato, Locale.US).apply {
+                    isLenient = false
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+
+                return parser.parse(valor)?.time
+            } catch (erro: Exception) {
+                // Tenta o próximo formato aceito pelo bridge.
+            }
+        }
+
+        return null
+    }
+
     @JavascriptInterface
     fun abrirExterno(url: String) {
         mainHandler.post {
@@ -1836,10 +2121,18 @@ private class BridgeWhyPhyApp(
     }
 
     private fun agendarNotificacaoLocalJson(payload: JSONObject) {
-        val id = payload.optString("id").trim().ifBlank {
-            "whyphy_${System.currentTimeMillis()}"
+        val action = payload.optString("action").lowercase(Locale.ROOT).trim()
+
+        if (action == "cancel") {
+            idNotificacaoPayload(payload)?.let(::cancelarNotificacaoLocalId)
+            return
         }
-        val tipo = payload.optString("tipo").lowercase(Locale.ROOT)
+
+        val id = idNotificacaoPayload(payload) ?: "whyphy_${System.currentTimeMillis()}"
+        val tipo = payload.optString("type")
+            .ifBlank { payload.optString("tipo") }
+            .lowercase(Locale.ROOT)
+            .trim()
         val routePath = payload.optString("routePath").trim()
         val titulo = payload.optString("titulo").ifBlank {
             payload.optString("title").ifBlank { "WhyPhy" }
@@ -1847,59 +2140,27 @@ private class BridgeWhyPhyApp(
         val mensagem = payload.optString("mensagem").ifBlank {
             payload.optString("body").ifBlank { "Você tem uma atividade pendente." }
         }
-        val triggerAtMillis = payload.optLong("triggerAtMillis", 0L)
-        val delayMillis = payload.optLong("delayMillis", 0L)
-        val quando = when {
-            triggerAtMillis > 0L -> triggerAtMillis
-            delayMillis > 0L -> System.currentTimeMillis() + delayMillis
-            else -> System.currentTimeMillis()
-        }
-        val canal = if (tipo == "meal" || tipo == "refeicao" || tipo == "refeição") {
-            "WhyPhyMealNotifications"
+        val canal = if (tipo.contains("meal") || tipo.contains("refeic")) {
+            CANAL_NOTIFICACAO_REFEICAO_LOCAL
         } else {
-            "WhyPhyWorkoutNotifications"
+            CANAL_NOTIFICACAO_TREINO_LOCAL
         }
-        val intent = Intent(context, NotificacaoLocalWhyPhyReceiver::class.java).apply {
-            putExtra("id", id)
-            putExtra("canal", canal)
-            putExtra("routePath", routePath)
-            putExtra("titulo", titulo)
-            putExtra("mensagem", mensagem)
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            id.hashCode(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        alarmManager.set(AlarmManager.RTC_WAKEUP, quando, pendingIntent)
+        AgendadorNotificacaoLocalWhyPhy.agendar(
+            context,
+            AgendamentoNotificacaoLocal(
+                id = id,
+                canal = canal,
+                routePath = routePath,
+                titulo = titulo,
+                mensagem = mensagem,
+                quandoMillis = horarioNotificacaoPayload(payload),
+            ),
+        )
     }
 
     private fun cancelarNotificacaoLocalId(id: String) {
-        val normalizado = id.trim()
-
-        if (normalizado.isEmpty()) {
-            return
-        }
-
-        val intent = Intent(context, NotificacaoLocalWhyPhyReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            normalizado.hashCode(),
-            intent,
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-        }
-
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(normalizado.hashCode())
+        AgendadorNotificacaoLocalWhyPhy.cancelar(context, id)
     }
 }
 
