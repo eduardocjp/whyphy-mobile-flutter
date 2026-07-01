@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -179,7 +180,11 @@ class _TelaShellWebviewIOSState extends State<TelaShellWebviewIOS> {
     }
   }
 
-  WebViewController _obterControlador(SessaoWhyPhy sessao) {
+  WebViewController _obterControlador(
+    BuildContext context,
+    SessaoWhyPhy sessao,
+    double viewportHeight,
+  ) {
     final WebViewController? controladorAtual = _controladorWebview;
     final String webviewUrl = _resolverUrlWebview(sessao.bootstrap!.webviewUrl);
     final String hostPermitido = Uri.parse(webviewUrl).host;
@@ -219,6 +224,9 @@ class _TelaShellWebviewIOSState extends State<TelaShellWebviewIOS> {
               });
             }
 
+            unawaited(
+              _instalarMetricasWebview(controlador, context, viewportHeight),
+            );
             unawaited(_instalarPonteLogout(controlador));
           },
           onNavigationRequest: (NavigationRequest request) {
@@ -265,6 +273,37 @@ class _TelaShellWebviewIOSState extends State<TelaShellWebviewIOS> {
 
     _mostrarAvisoTopo('Navegação externa bloqueada pelo app WhyPhy.');
     return NavigationDecision.prevent;
+  }
+
+  String _metricasWebviewJson(BuildContext context, double viewportHeight) {
+    final MediaQueryData mediaQuery = MediaQuery.of(context);
+    final Map<String, num> metricas = <String, num>{
+      'safeAreaBottom': mediaQuery.padding.bottom,
+      'screenHeight': mediaQuery.size.height,
+      'viewportHeight': viewportHeight,
+    };
+
+    return jsonEncode(metricas);
+  }
+
+  Future<void> _instalarMetricasWebview(
+    WebViewController controlador,
+    BuildContext context,
+    double viewportHeight,
+  ) async {
+    final String metricasJson = _metricasWebviewJson(context, viewportHeight);
+
+    await controlador.runJavaScript('''
+      (function() {
+        var metricas = $metricasJson;
+        var root = document.documentElement;
+        if (!root || !metricas) return;
+        var safeBottom = Math.max(Number(metricas.safeAreaBottom) || 0, 0);
+        root.style.setProperty("--flutter-safe-bottom", safeBottom + "px");
+        window.__whyphyViewportInfo = metricas;
+        window.dispatchEvent(new CustomEvent("whyphy:flutter-viewport", { detail: metricas }));
+      })();
+    ''');
   }
 
   Future<void> _instalarPonteLogout(WebViewController controlador) async {
@@ -522,14 +561,26 @@ class _TelaShellWebviewIOSState extends State<TelaShellWebviewIOS> {
       },
       child: ColoredBox(
         color: CoresApp.fundo,
-        child: SafeArea(child: conteudo),
+        child: temWebviewAutenticada
+            ? SafeArea(top: true, bottom: false, child: conteudo)
+            : SafeArea(child: conteudo),
       ),
     );
   }
 
   Widget _buildConteudo(BuildContext context, SessaoWhyPhy? sessao) {
     if (sessao?.bootstrap != null) {
-      return WebViewWidget(controller: _obterControlador(sessao!));
+      return LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          return WebViewWidget(
+            controller: _obterControlador(
+              context,
+              sessao!,
+              constraints.maxHeight,
+            ),
+          );
+        },
+      );
     }
 
     return Padding(

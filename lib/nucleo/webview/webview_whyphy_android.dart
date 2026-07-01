@@ -52,20 +52,28 @@ class WebviewWhyPhyAndroid extends StatelessWidget {
     }
 
     final String webviewUrl = _resolverUrlWebview(bootstrap.webviewUrl);
+    final MediaQueryData mediaQuery = MediaQuery.of(context);
 
-    return AndroidView(
-      key: const ValueKey<String>('whyphy-webview-android'),
-      viewType: 'br.com.whyphy/webview',
-      creationParams: <String, Object?>{
-        'allowedHost': Uri.parse(webviewUrl).host,
-        'initialHeaders': <String, String>{
-          'authorization': 'Bearer ${sessao.accessToken}',
-          'x-device-id': sessao.deviceId,
-          'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
-        },
-        'url': webviewUrl,
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        return AndroidView(
+          key: const ValueKey<String>('whyphy-webview-android'),
+          viewType: 'br.com.whyphy/webview',
+          creationParams: <String, Object?>{
+            'allowedHost': Uri.parse(webviewUrl).host,
+            'safeAreaBottom': mediaQuery.padding.bottom,
+            'screenHeight': mediaQuery.size.height,
+            'viewportHeight': constraints.maxHeight,
+            'initialHeaders': <String, String>{
+              'authorization': 'Bearer ${sessao.accessToken}',
+              'x-device-id': sessao.deviceId,
+              'x-whyphy-app': ConfiguracaoApp.identificadorAppWebview,
+            },
+            'url': webviewUrl,
+          },
+          creationParamsCodec: const StandardMessageCodec(),
+        );
       },
-      creationParamsCodec: const StandardMessageCodec(),
     );
   }
 }

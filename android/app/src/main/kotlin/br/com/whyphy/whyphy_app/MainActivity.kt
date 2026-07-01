@@ -24,6 +24,7 @@ import android.os.Looper
 import android.os.Environment
 import android.provider.OpenableColumns
 import android.provider.MediaStore
+import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -1150,6 +1151,11 @@ private class WebViewWhyPhy(
     private val webView = WebView(context)
     private val url = params["url"] as? String ?: "about:blank"
     private val allowedHost = params["allowedHost"] as? String ?: Uri.parse(url).host.orEmpty()
+    private val metricasWebviewJson = JSONObject().apply {
+        put("safeAreaBottom", lerParametroNumero(params, "safeAreaBottom"))
+        put("screenHeight", lerParametroNumero(params, "screenHeight"))
+        put("viewportHeight", lerParametroNumero(params, "viewportHeight"))
+    }.toString()
     private val initialHeaders = ((params["initialHeaders"] as? Map<*, *>) ?: emptyMap<Any?, Any?>())
         .entries
         .mapNotNull { entry ->
@@ -1290,6 +1296,7 @@ private class WebViewWhyPhy(
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
+                injetarMetricasWebviewFlutter(view)
                 injetarAjustesDeInputArquivo(view)
                 injetarInterceptadorLogout(view)
                 injetarInterceptadorDownloads(view)
@@ -1364,6 +1371,30 @@ private class WebViewWhyPhy(
                 }
             }
         }
+    }
+
+    private fun lerParametroNumero(params: Map<*, *>, nome: String): Double {
+        return when (val valor = params[nome]) {
+            is Number -> valor.toDouble()
+            is String -> valor.toDoubleOrNull() ?: 0.0
+            else -> 0.0
+        }
+    }
+
+    private fun injetarMetricasWebviewFlutter(view: WebView) {
+        val script = """
+            (function() {
+              var metricas = $metricasWebviewJson;
+              var root = document.documentElement;
+              if (!root || !metricas) return;
+              var safeBottom = Math.max(Number(metricas.safeAreaBottom) || 0, 0);
+              root.style.setProperty("--flutter-safe-bottom", safeBottom + "px");
+              window.__whyphyViewportInfo = metricas;
+              window.dispatchEvent(new CustomEvent("whyphy:flutter-viewport", { detail: metricas }));
+            })();
+        """.trimIndent()
+
+        view.evaluateJavascript(script, null)
     }
 
     private fun tratarNavegacao(context: Context, uri: Uri): Boolean {
@@ -2163,23 +2194,64 @@ private class BridgeWhyPhyApp(
         }
     }
 
+
+    @JavascriptInterface
+    fun solicitarPermissaoAlarmesExatos() {
+        mainHandler.post {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                Log.d("WhyPhyLocalNotif", "alarme exato não exige permissão especial nesta API")
+                return@post
+            }
+
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+            if (alarmManager.canScheduleExactAlarms()) {
+                Log.d("WhyPhyLocalNotif", "permissão de alarme exato já concedida")
+                return@post
+            }
+
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+
+                context.startActivity(intent)
+                Log.d("WhyPhyLocalNotif", "solicitando permissão de alarme exato")
+            } catch (erro: Exception) {
+                Log.e("WhyPhyLocalNotif", "não foi possível abrir permissão de alarme exato", erro)
+
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+
+                    context.startActivity(intent)
+                } catch (erroFallback: Exception) {
+                    Log.e("WhyPhyLocalNotif", "não foi possível abrir configurações do app", erroFallback)
+                }
+            }
+        }
+    }
+
     @JavascriptInterface
     fun agendarNotificacaoLocal(solicitacaoJson: String) {
-    Log.d("WhyPhyLocalNotif", "bridge agendarNotificacaoLocal: $solicitacaoJson")
+        Log.d("WhyPhyLocalNotif", "bridge agendarNotificacaoLocal: $solicitacaoJson")
 
-    mainHandler.post {
-        try {
-            agendarNotificacaoLocalJson(JSONObject(solicitacaoJson.ifBlank { "{}" }))
-        } catch (erro: Exception) {
-            Log.e("WhyPhyLocalNotif", "erro ao agendar", erro)
-            canalEventosWebview.invokeMethod(
-                "notificacaoWeb",
-                mapOf(
-                    "mensagem" to "Não foi possível agendar a notificação local.",
-                    "modulo" to "",
-                ),
-            )
-        }
+        mainHandler.post {
+            try {
+                agendarNotificacaoLocalJson(JSONObject(solicitacaoJson.ifBlank { "{}" }))
+            } catch (erro: Exception) {
+                Log.e("WhyPhyLocalNotif", "erro ao agendar", erro)
+                canalEventosWebview.invokeMethod(
+                    "notificacaoWeb",
+                    mapOf(
+                        "mensagem" to "Não foi possível agendar a notificação local.",
+                        "modulo" to "",
+                    ),
+                )
+            }
         }
     }
 

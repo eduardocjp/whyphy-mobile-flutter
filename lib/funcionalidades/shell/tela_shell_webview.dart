@@ -729,7 +729,9 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       },
       child: ColoredBox(
         color: CoresApp.fundo,
-        child: SafeArea(child: conteudo),
+        child: temWebviewAutenticada
+            ? SafeArea(top: true, bottom: false, child: conteudo)
+            : SafeArea(child: conteudo),
       ),
     );
   }
