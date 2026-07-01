@@ -1,4 +1,8 @@
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../../funcionalidades/work/servicos/servico_compartilhamento_work.dart';
 import '../../nucleo/tema/cores_app.dart';
@@ -37,6 +41,7 @@ class WorkShareView extends StatefulWidget {
 }
 
 class _WorkShareViewState extends State<WorkShareView> {
+  final GlobalKey _previewKey = GlobalKey();
   bool _processando = false;
   String _tipo = 'simples';
   String? _mensagem;
@@ -87,6 +92,31 @@ class _WorkShareViewState extends State<WorkShareView> {
           ? 'Ação aberta no dispositivo.'
           : 'Não foi possível abrir a ação nativa.';
     });
+  }
+
+  Future<bool> _compartilharImagemPreview() async {
+    final RenderObject? renderObject = _previewKey.currentContext
+        ?.findRenderObject();
+
+    if (renderObject is! RenderRepaintBoundary) {
+      return false;
+    }
+
+    final ui.Image image = await renderObject.toImage(pixelRatio: 3);
+    final ByteData? byteData = await image.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
+
+    if (byteData == null) {
+      return false;
+    }
+
+    return widget.servicoCompartilhamento.compartilharImagem(
+      bytesPng: byteData.buffer.asUint8List(),
+      texto: _textoCompartilhamento,
+      tipo: _tipo,
+      titulo: _titulo,
+    );
   }
 
   @override
@@ -158,13 +188,16 @@ class _WorkShareViewState extends State<WorkShareView> {
                           setState(() => _tipo = value),
                     ),
                     const SizedBox(height: EspacamentoApp.medio),
-                    _SharePreview(
-                      cardioSeconds: widget.cardioSeconds,
-                      completedSeries: widget.completedSeries,
-                      durationSeconds: _durationSeconds,
-                      kcalBurned: widget.kcalBurned,
-                      totalSeries: widget.totalSeries,
-                      workout: widget.workout,
+                    RepaintBoundary(
+                      key: _previewKey,
+                      child: _SharePreview(
+                        cardioSeconds: widget.cardioSeconds,
+                        completedSeries: widget.completedSeries,
+                        durationSeconds: _durationSeconds,
+                        kcalBurned: widget.kcalBurned,
+                        totalSeries: widget.totalSeries,
+                        workout: widget.workout,
+                      ),
                     ),
                     if (_mensagem != null) ...<Widget>[
                       const SizedBox(height: EspacamentoApp.medio),
@@ -182,17 +215,11 @@ class _WorkShareViewState extends State<WorkShareView> {
                     _AcaoShare(
                       icon: Icons.camera_alt_outlined,
                       label: _tipo == 'detalhado'
-                          ? 'Câmera detalhada'
-                          : 'Câmera simples',
+                          ? 'Compartilhar imagem detalhada'
+                          : 'Compartilhar imagem simples',
                       onTap: _processando
                           ? null
-                          : () => _executar(
-                              () => widget.servicoCompartilhamento.abrirCamera(
-                                texto: _textoCompartilhamento,
-                                tipo: _tipo,
-                                titulo: _titulo,
-                              ),
-                            ),
+                          : () => _executar(_compartilharImagemPreview),
                     ),
                     const SizedBox(height: EspacamentoApp.pequeno),
                     _AcaoShare(

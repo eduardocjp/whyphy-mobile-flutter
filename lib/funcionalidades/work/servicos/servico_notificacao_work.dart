@@ -16,6 +16,10 @@ class ServicoNotificacaoWork {
       return;
     }
 
+    if (snapshot.phase == FaseSessaoWork.exercicioRodando) {
+      return;
+    }
+
     final _TextoNotificacaoWork texto = _textoParaFase(snapshot.phase);
 
     try {

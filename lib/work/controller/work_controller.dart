@@ -22,6 +22,7 @@ class ControladorWorkNativo extends ChangeNotifier {
   });
 
   static const int _extraTransicaoExercicioSegundos = 20;
+  static const int _duracaoExecucaoSerieSegundos = 28;
 
   final void Function(ResultadoEventoWork resultado)? onResultadoWeb;
   final ServicoExecucaoWork servicoExecucaoWork;
@@ -35,6 +36,9 @@ class ControladorWorkNativo extends ChangeNotifier {
   Timer? _timer;
   ResultadoConclusaoWork? _resultadoConclusao;
   final Map<String, Set<int>> _seriesConcluidas = <String, Set<int>>{};
+  final Map<String, int> _seriesPlanejadasPorExercicio = <String, int>{};
+  final Map<String, Map<int, SerieDraftWork>> _seriesDrafts =
+      <String, Map<int, SerieDraftWork>>{};
   bool _sincronizacaoEmAndamento = false;
 
   BootstrapWorkMobile? get bootstrap => _bootstrap;
@@ -73,9 +77,17 @@ class ControladorWorkNativo extends ChangeNotifier {
 
   bool get faseComContagemRegressiva {
     final FaseSessaoWork? fase = _snapshot?.phase;
-    return fase == FaseSessaoWork.descansoSerie ||
+    return (fase == FaseSessaoWork.exercicioRodando &&
+            _snapshot?.endsAtMs != null) ||
+        fase == FaseSessaoWork.descansoSerie ||
         fase == FaseSessaoWork.transicaoProximoExercicio ||
         fase == FaseSessaoWork.cardioRodando;
+  }
+
+  bool get podePularDescanso {
+    final FaseSessaoWork? fase = _snapshot?.phase;
+    return fase == FaseSessaoWork.descansoSerie ||
+        fase == FaseSessaoWork.transicaoProximoExercicio;
   }
 
   bool get pausado {
@@ -98,8 +110,33 @@ class ControladorWorkNativo extends ChangeNotifier {
 
     return ficha.exercises.fold<int>(
       0,
-      (int total, ExercicioWork exercicio) => total + exercicio.sets,
+      (int total, ExercicioWork exercicio) =>
+          total + totalSeriesExercicio(exercicio),
     );
+  }
+
+  int get totalExercicios {
+    return _workout?.exercises.length ?? 0;
+  }
+
+  int get exerciciosContabilizados {
+    final FichaWork? ficha = _workout;
+
+    if (ficha == null || ficha.exercises.isEmpty) {
+      return 0;
+    }
+
+    return (indiceExercicioAtual + 1).clamp(0, ficha.exercises.length);
+  }
+
+  double get progressoExercicios {
+    final int total = totalExercicios;
+
+    if (total == 0) {
+      return 0;
+    }
+
+    return exerciciosContabilizados / total;
   }
 
   double get kcalEstimadas {
@@ -140,13 +177,74 @@ class ControladorWorkNativo extends ChangeNotifier {
       FaseSessaoWork.pausado => 'pausado',
       FaseSessaoWork.concluido => 'concluído',
       FaseSessaoWork.cancelado => 'cancelado',
-      FaseSessaoWork.exercicioRodando => 'em execução',
+      FaseSessaoWork.exercicioRodando =>
+        _snapshot?.endsAtMs == null
+            ? 'pronto para iniciar série'
+            : 'série em execução',
       null => 'não iniciado',
     };
   }
 
   bool serieConcluida(String exerciseId, int setNumber) {
     return _seriesConcluidas[exerciseId]?.contains(setNumber) ?? false;
+  }
+
+  bool get serieEmAndamento {
+    final FaseSessaoWork? fase = _snapshot?.phase;
+    return _snapshot?.endsAtMs != null &&
+        (fase == FaseSessaoWork.exercicioRodando ||
+            fase == FaseSessaoWork.descansoSerie ||
+            fase == FaseSessaoWork.transicaoProximoExercicio);
+  }
+
+  bool get edicaoSeriesBloqueada {
+    return serieEmAndamento;
+  }
+
+  String get textoBotaoSerie {
+    final FaseSessaoWork? fase = _snapshot?.phase;
+
+    if (fase == FaseSessaoWork.exercicioRodando &&
+        _snapshot?.endsAtMs != null) {
+      return 'Série em execução';
+    }
+
+    if (fase == FaseSessaoWork.descansoSerie) {
+      return 'Descanso em andamento';
+    }
+
+    if (fase == FaseSessaoWork.transicaoProximoExercicio) {
+      return 'Próximo exercício';
+    }
+
+    return 'Iniciar série';
+  }
+
+  bool serieAtualEmExecucao(String exerciseId, int setNumber) {
+    final SnapshotSessaoWork? atual = _snapshot;
+    final ExercicioWork? exercicio = exercicioAtual;
+
+    return atual?.phase == FaseSessaoWork.exercicioRodando &&
+        atual?.endsAtMs != null &&
+        exercicio?.id == exerciseId &&
+        atual?.setIndex == setNumber - 1;
+  }
+
+  bool serieAtualEmDescanso(String exerciseId, int setNumber) {
+    final SnapshotSessaoWork? atual = _snapshot;
+    final ExercicioWork? exercicio = exercicioAtual;
+
+    return atual?.phase == FaseSessaoWork.descansoSerie &&
+        exercicio?.id == exerciseId &&
+        atual?.setIndex == setNumber - 1;
+  }
+
+  int totalSeriesExercicio(ExercicioWork exercicio) {
+    return _seriesPlanejadasPorExercicio[exercicio.id] ?? exercicio.sets;
+  }
+
+  SerieDraftWork draftSerie(String exerciseId, int setNumber) {
+    return _seriesDrafts[exerciseId]?[setNumber] ?? SerieDraftWork.vazio;
   }
 
   Future<void> inicializar(SnapshotSessaoWork? snapshotInicial) async {
@@ -221,6 +319,10 @@ class ControladorWorkNativo extends ChangeNotifier {
   }
 
   Future<void> alternarSerie(String exerciseId, int setNumber) async {
+    if (serieEmAndamento) {
+      return;
+    }
+
     final Set<int> series = _seriesConcluidas.putIfAbsent(
       exerciseId,
       () => <int>{},
@@ -234,14 +336,66 @@ class ControladorWorkNativo extends ChangeNotifier {
     }
 
     series.add(setNumber);
+    notifyListeners();
+  }
 
+  Future<void> iniciarSerieAtual() async {
+    final SnapshotSessaoWork? atual = _snapshot;
     final ExercicioWork? exercicio = exercicioAtual;
 
-    if (exercicio?.id == exerciseId) {
-      await _iniciarDescansoDaSerie(exercicio!, setNumber);
-    } else {
-      notifyListeners();
+    if (atual == null ||
+        exercicio == null ||
+        serieEmAndamento ||
+        atual.phase != FaseSessaoWork.exercicioRodando) {
+      return;
     }
+
+    final int? proximaSerie = _primeiraSeriePendente(exercicio);
+
+    if (proximaSerie == null) {
+      return;
+    }
+
+    final int agora = servicoExecucaoWork.cronometro.agoraMs();
+    _snapshot = _iniciarContagemSerie(
+      atual.recalcular(agora).copiarCom(setIndex: proximaSerie - 1),
+      agora,
+    );
+    await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+  }
+
+  void adicionarSerie(ExercicioWork exercicio) {
+    if (edicaoSeriesBloqueada) {
+      return;
+    }
+
+    final int totalAtual = totalSeriesExercicio(exercicio);
+    final int proximaSerie = totalAtual + 1;
+    final SerieDraftWork draftAnterior = draftSerie(exercicio.id, totalAtual);
+
+    _seriesPlanejadasPorExercicio[exercicio.id] = proximaSerie;
+    _seriesDrafts.putIfAbsent(
+      exercicio.id,
+      () => <int, SerieDraftWork>{},
+    )[proximaSerie] = draftAnterior;
+    notifyListeners();
+  }
+
+  void atualizarDraftSerie(
+    String exerciseId,
+    int setNumber, {
+    String? peso,
+    String? reps,
+  }) {
+    final SerieDraftWork atual = draftSerie(exerciseId, setNumber);
+
+    _seriesDrafts.putIfAbsent(
+      exerciseId,
+      () => <int, SerieDraftWork>{},
+    )[setNumber] = atual.copiarCom(
+      peso: peso?.replaceAll(',', '.'),
+      reps: reps?.replaceAll(',', '.'),
+    );
   }
 
   bool exercicioAtualCompleto() {
@@ -252,7 +406,7 @@ class ControladorWorkNativo extends ChangeNotifier {
     }
 
     final Set<int> concluidas = _seriesConcluidas[exercicio.id] ?? <int>{};
-    return concluidas.length >= exercicio.sets;
+    return concluidas.length >= totalSeriesExercicio(exercicio);
   }
 
   Future<void> avancarExercicio({required bool forcar}) async {
@@ -290,7 +444,7 @@ class ControladorWorkNativo extends ChangeNotifier {
           endsAtMs: agora + (descansoSegundos * 1000),
           phase: FaseSessaoWork.transicaoProximoExercicio,
           restSeconds: descansoSegundos,
-          setIndex: exercicio.sets - 1,
+          setIndex: totalSeriesExercicio(exercicio) - 1,
           updatedAtMs: agora,
         );
     await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
@@ -310,6 +464,17 @@ class ControladorWorkNativo extends ChangeNotifier {
         );
     onResultadoWeb?.call(resultado);
     _snapshot = SnapshotSessaoWork.fromJson(resultado.payload);
+
+    final int agora = servicoExecucaoWork.cronometro.agoraMs();
+    final SnapshotSessaoWork? proximo = _snapshot;
+
+    if (proximo != null &&
+        proximo.phase == FaseSessaoWork.exercicioRodando &&
+        proximo.endsAtMs == null) {
+      _snapshot = _iniciarContagemSerie(proximo, agora);
+      await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+    }
+
     await _carregarTaxaKcal();
     notifyListeners();
   }
@@ -434,76 +599,197 @@ class ControladorWorkNativo extends ChangeNotifier {
 
   void _popularSeriesIniciais(FichaWork ficha) {
     _seriesConcluidas.clear();
+    _seriesPlanejadasPorExercicio.clear();
+    _seriesDrafts.clear();
 
     for (final ExercicioWork exercicio in ficha.exercises) {
       _seriesConcluidas.putIfAbsent(exercicio.id, () => <int>{});
+      _seriesPlanejadasPorExercicio[exercicio.id] = exercicio.sets;
+      _seriesDrafts[exercicio.id] = <int, SerieDraftWork>{
+        for (int serie = 1; serie <= exercicio.sets; serie += 1)
+          serie: SerieDraftWork(reps: exercicio.reps, peso: exercicio.weight),
+      };
     }
   }
 
   void _iniciarTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      final SnapshotSessaoWork? atual = _snapshot;
-
-      if (atual == null || _sincronizacaoEmAndamento) {
-        return;
-      }
-
-      final SnapshotSessaoWork recalculado = servicoExecucaoWork.cronometro
-          .recalcular(atual);
-      final bool mudouFase =
-          recalculado.phase != atual.phase ||
-          recalculado.exerciseIndex != atual.exerciseIndex ||
-          recalculado.setIndex != atual.setIndex ||
-          recalculado.cardioIndex != atual.cardioIndex;
-
-      _snapshot = recalculado;
-      notifyListeners();
-
-      if (mudouFase) {
-        unawaited(_sincronizarSnapshot(metodo: 'sincronizarWorkNativo'));
-        unawaited(_carregarTaxaKcal());
-      }
+      unawaited(_processarTick());
     });
   }
 
-  Future<void> _iniciarDescansoDaSerie(
-    ExercicioWork exercicio,
-    int setNumber,
-  ) async {
+  Future<void> _processarTick() async {
     final SnapshotSessaoWork? atual = _snapshot;
 
-    if (atual == null) {
+    if (atual == null || _sincronizacaoEmAndamento) {
       return;
     }
 
     final int agora = servicoExecucaoWork.cronometro.agoraMs();
-    final bool ultimaSerie = setNumber >= exercicio.sets;
-    final int descansoSegundos = exercicio.restSeconds > 0
-        ? exercicio.restSeconds
-        : (_workout?.restSeconds ?? 0);
 
-    if (ultimaSerie || descansoSegundos <= 0) {
-      _snapshot = atual
-          .recalcular(agora)
-          .copiarCom(
-            phase: FaseSessaoWork.exercicioRodando,
-            setIndex: setNumber - 1,
-            updatedAtMs: agora,
-          );
-    } else {
-      _snapshot = atual
-          .recalcular(agora)
-          .copiarCom(
-            endsAtMs: agora + (descansoSegundos * 1000),
-            phase: FaseSessaoWork.descansoSerie,
-            restSeconds: descansoSegundos,
-            setIndex: setNumber - 1,
-            updatedAtMs: agora,
-          );
+    if (_execucaoSerieVencida(atual, agora)) {
+      await _finalizarExecucaoSerie(atual, agora);
+      return;
     }
 
+    final SnapshotSessaoWork recalculado = servicoExecucaoWork.cronometro
+        .recalcular(atual);
+    final bool avancouParaExercicio =
+        atual.phase != FaseSessaoWork.exercicioRodando &&
+        recalculado.phase == FaseSessaoWork.exercicioRodando;
+    final SnapshotSessaoWork proximo =
+        avancouParaExercicio && recalculado.endsAtMs == null
+        ? _iniciarContagemSerie(recalculado, agora)
+        : recalculado;
+    final bool mudouFase =
+        proximo.phase != atual.phase ||
+        proximo.exerciseIndex != atual.exerciseIndex ||
+        proximo.setIndex != atual.setIndex ||
+        proximo.cardioIndex != atual.cardioIndex ||
+        proximo.endsAtMs != atual.endsAtMs;
+
+    _snapshot = proximo;
+    notifyListeners();
+
+    if (mudouFase) {
+      unawaited(_sincronizarSnapshot(metodo: 'sincronizarWorkNativo'));
+      unawaited(_carregarTaxaKcal());
+    }
+  }
+
+  bool _execucaoSerieVencida(SnapshotSessaoWork snapshot, int agora) {
+    return snapshot.phase == FaseSessaoWork.exercicioRodando &&
+        snapshot.endsAtMs != null &&
+        agora >= snapshot.endsAtMs!;
+  }
+
+  Future<void> _finalizarExecucaoSerie(
+    SnapshotSessaoWork atual,
+    int agora,
+  ) async {
+    final FichaWork? ficha = _workout;
+    final ExercicioWork? exercicio = _exercicioPorIndice(atual.exerciseIndex);
+
+    if (ficha == null || exercicio == null) {
+      return;
+    }
+
+    final SnapshotSessaoWork base = atual.recalcular(agora);
+    final int setNumber = (base.setIndex + 1).clamp(
+      1,
+      totalSeriesExercicio(exercicio),
+    );
+    _seriesConcluidas.putIfAbsent(exercicio.id, () => <int>{}).add(setNumber);
+
+    final int? proximaSerie = _primeiraSeriePendente(exercicio);
+
+    if (proximaSerie != null) {
+      final int descansoSegundos = _descansoExercicioSegundos(exercicio);
+
+      if (descansoSegundos > 0) {
+        _snapshot = base.copiarCom(
+          endsAtMs: agora + (descansoSegundos * 1000),
+          phase: FaseSessaoWork.descansoSerie,
+          restSeconds: descansoSegundos,
+          setIndex: setNumber - 1,
+          updatedAtMs: agora,
+        );
+      } else {
+        _snapshot = _iniciarContagemSerie(
+          base.copiarCom(
+            endsAtMs: null,
+            phase: FaseSessaoWork.exercicioRodando,
+            setIndex: proximaSerie - 1,
+            updatedAtMs: agora,
+          ),
+          agora,
+        );
+      }
+
+      await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+      return;
+    }
+
+    final int proximoIndice = base.exerciseIndex + 1;
+
+    if (proximoIndice >= ficha.exercises.length) {
+      _snapshot = base.copiarCom(
+        endsAtMs: null,
+        setIndex: setNumber - 1,
+        updatedAtMs: agora,
+      );
+      await iniciarCardio();
+      return;
+    }
+
+    final int transicaoSegundos =
+        _descansoExercicioSegundos(exercicio) +
+        _extraTransicaoExercicioSegundos;
+    _snapshot = base.copiarCom(
+      endsAtMs: agora + (transicaoSegundos * 1000),
+      phase: FaseSessaoWork.transicaoProximoExercicio,
+      restSeconds: transicaoSegundos,
+      setIndex: setNumber - 1,
+      updatedAtMs: agora,
+    );
+
     await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+  }
+
+  SnapshotSessaoWork _iniciarContagemSerie(SnapshotSessaoWork base, int agora) {
+    final ExercicioWork? exercicio = _exercicioPorIndice(base.exerciseIndex);
+
+    if (exercicio == null) {
+      return base;
+    }
+
+    final int setNumber = base.setIndex + 1;
+
+    if (setNumber < 1 ||
+        setNumber > totalSeriesExercicio(exercicio) ||
+        serieConcluida(exercicio.id, setNumber)) {
+      return base;
+    }
+
+    return base.copiarCom(
+      endsAtMs: agora + (_duracaoExecucaoSerieSegundos * 1000),
+      phase: FaseSessaoWork.exercicioRodando,
+      phaseBaseElapsedSeconds: base.exerciseElapsedSeconds,
+      phaseStartedAtMs: agora,
+      restSeconds: _descansoExercicioSegundos(exercicio),
+      updatedAtMs: agora,
+    );
+  }
+
+  int? _primeiraSeriePendente(ExercicioWork exercicio) {
+    final Set<int> concluidas = _seriesConcluidas[exercicio.id] ?? <int>{};
+    final int total = totalSeriesExercicio(exercicio);
+
+    for (int serie = 1; serie <= total; serie += 1) {
+      if (!concluidas.contains(serie)) {
+        return serie;
+      }
+    }
+
+    return null;
+  }
+
+  int _descansoExercicioSegundos(ExercicioWork exercicio) {
+    return exercicio.restSeconds > 0
+        ? exercicio.restSeconds
+        : (_workout?.restSeconds ?? 0);
+  }
+
+  ExercicioWork? _exercicioPorIndice(int index) {
+    final FichaWork? ficha = _workout;
+
+    if (ficha == null || ficha.exercises.isEmpty) {
+      return null;
+    }
+
+    final int seguro = index.clamp(0, ficha.exercises.length - 1);
+    return ficha.exercises[seguro];
   }
 
   Future<void> _sincronizarSnapshot({required String metodo}) async {
@@ -553,15 +839,18 @@ class ControladorWorkNativo extends ChangeNotifier {
   List<SerieConcluidaWork> _seriesParaConclusao(FichaWork ficha) {
     return ficha.exercises
         .expand((ExercicioWork exercicio) {
-          return List<SerieConcluidaWork>.generate(exercicio.sets, (int index) {
+          final int total = totalSeriesExercicio(exercicio);
+
+          return List<SerieConcluidaWork>.generate(total, (int index) {
             final int setNumber = index + 1;
+            final SerieDraftWork draft = draftSerie(exercicio.id, setNumber);
 
             return SerieConcluidaWork(
               completed: serieConcluida(exercicio.id, setNumber),
               exerciseId: exercicio.id,
-              repetitionsDone: _parseInteiro(exercicio.reps),
+              repetitionsDone: _parseInteiro(draft.reps),
               setNumber: setNumber,
-              weightUsedKg: _parseDouble(exercicio.weight),
+              weightUsedKg: _parseDouble(draft.peso),
             );
           });
         })
@@ -606,4 +895,17 @@ class ControladorWorkNativo extends ChangeNotifier {
 
 class WorkSeriesPendentes implements Exception {
   const WorkSeriesPendentes();
+}
+
+class SerieDraftWork {
+  const SerieDraftWork({required this.peso, required this.reps});
+
+  static const SerieDraftWork vazio = SerieDraftWork(peso: '', reps: '');
+
+  final String peso;
+  final String reps;
+
+  SerieDraftWork copiarCom({String? peso, String? reps}) {
+    return SerieDraftWork(peso: peso ?? this.peso, reps: reps ?? this.reps);
+  }
 }

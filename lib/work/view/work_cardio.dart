@@ -221,10 +221,10 @@ class _CardioInfo extends StatelessWidget {
                   children: <Widget>[
                     const _Eyebrow('Cronômetro'),
                     Text(
-                      _formatStopwatch(controlador.totalElapsedSeconds),
+                      _formatStopwatch(controlador.cardioElapsedSeconds),
                       style: const TextStyle(
                         color: CoresApp.textoPrincipal,
-                        fontSize: 28,
+                        fontSize: 34,
                         fontWeight: FontWeight.w900,
                         height: 1,
                       ),
@@ -238,7 +238,7 @@ class _CardioInfo extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      'Exercícios: ${_formatStopwatch(controlador.exerciseElapsedSeconds)} | Cardio: ${_formatStopwatch(controlador.cardioElapsedSeconds)}',
+                      'Exercícios: ${_formatStopwatch(controlador.exerciseElapsedSeconds)} | Total: ${_formatStopwatch(controlador.totalElapsedSeconds)}',
                       style: const TextStyle(
                         color: CoresApp.textoSuave,
                         fontSize: 11,

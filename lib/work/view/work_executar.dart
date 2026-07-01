@@ -10,10 +10,16 @@ import '../controller/work_controller.dart';
 import '../models/work_modelos.dart';
 
 class WorkExecutar extends StatefulWidget {
-  const WorkExecutar({super.key, required this.controlador, this.onClose});
+  const WorkExecutar({
+    super.key,
+    required this.controlador,
+    this.onClose,
+    this.onHome,
+  });
 
   final ControladorWorkNativo controlador;
   final VoidCallback? onClose;
+  final VoidCallback? onHome;
 
   @override
   State<WorkExecutar> createState() => _WorkExecutarState();
@@ -45,76 +51,61 @@ class _WorkExecutarState extends State<WorkExecutar> {
 
     return Stack(
       children: <Widget>[
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: CoresApp.superficie,
-              border: Border.all(color: CoresApp.borda),
-              borderRadius: const BorderRadius.all(Radius.circular(30)),
-            ),
-            child: Column(
-              children: <Widget>[
-                _HeroExecucao(workout: workout),
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(EspacamentoApp.grande),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        _ProgressoTreino(controlador: controlador),
-                        const SizedBox(height: EspacamentoApp.medio),
-                        _CardExercicio(
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: CoresApp.superficie,
+            border: Border.all(color: CoresApp.borda),
+          ),
+          child: Column(
+            children: <Widget>[
+              _HeroExecucao(exercicio: exercicio, workout: workout),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      _ProgressoTreino(controlador: controlador),
+                      const SizedBox(height: EspacamentoApp.pequeno),
+                      Flexible(
+                        flex: 5,
+                        child: _CardExercicio(
                           exercicio: exercicio,
                           indice: controlador.indiceExercicioAtual,
+                          seriesTotal: controlador.totalSeriesExercicio(
+                            exercicio,
+                          ),
                           total: workout.exercises.length,
                           onAbrirMidia: _temMidia(exercicio)
                               ? () => setState(() => _midiaAberta = exercicio)
                               : null,
                         ),
-                        const SizedBox(height: EspacamentoApp.medio),
-                        _SeriesList(
+                      ),
+                      const SizedBox(height: EspacamentoApp.pequeno),
+                      Expanded(
+                        flex: 4,
+                        child: _SeriesList(
                           controlador: controlador,
                           exercicio: exercicio,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-                  child: Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: widget.onClose,
-                          icon: const Icon(Icons.arrow_back_rounded),
-                          label: const Text('Voltar'),
-                        ),
-                      ),
-                      const SizedBox(width: EspacamentoApp.pequeno),
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: controlador.faseComContagemRegressiva
-                              ? controlador.pularDescanso
-                              : () => _avancar(forcar: false),
-                          icon: Icon(
-                            controlador.faseComContagemRegressiva
-                                ? Icons.skip_next_rounded
-                                : Icons.arrow_forward_rounded,
-                          ),
-                          label: Text(
-                            controlador.faseComContagemRegressiva
-                                ? 'Pular descanso'
-                                : 'Avançar',
-                          ),
                         ),
                       ),
                     ],
                   ),
                 ),
-              ],
-            ),
+              ),
+              _AcoesExecucao(
+                onAvancar: controlador.podePularDescanso
+                    ? controlador.pularDescanso
+                    : () => _avancar(forcar: false),
+                onClose: widget.onHome ?? widget.onClose,
+                textoAvancar: controlador.podePularDescanso
+                    ? 'Pular descanso'
+                    : 'Avançar',
+                iconeAvancar: controlador.podePularDescanso
+                    ? Icons.skip_next_rounded
+                    : Icons.arrow_forward_rounded,
+              ),
+            ],
           ),
         ),
         if (_avisoSeriesPendente)
@@ -133,18 +124,18 @@ class _WorkExecutarState extends State<WorkExecutar> {
 }
 
 class _HeroExecucao extends StatelessWidget {
-  const _HeroExecucao({required this.workout});
+  const _HeroExecucao({required this.exercicio, required this.workout});
 
+  final ExercicioWork exercicio;
   final FichaWork workout;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(EspacamentoApp.grande),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
       decoration: BoxDecoration(
         border: const Border(bottom: BorderSide(color: CoresApp.borda)),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
         gradient: RadialGradient(
           center: Alignment.topRight,
           radius: 1.2,
@@ -159,26 +150,28 @@ class _HeroExecucao extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           const _Eyebrow('Track de treino'),
-          const SizedBox(height: EspacamentoApp.medio),
+          const SizedBox(height: 6),
           Text(
-            workout.title,
+            exercicio.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: CoresApp.textoPrincipal,
-              fontSize: 30,
+              fontSize: 22,
               fontWeight: FontWeight.w900,
               height: 1.05,
             ),
           ),
-          const SizedBox(height: EspacamentoApp.pequeno),
+          const SizedBox(height: 5),
           Text(
-            workout.description.isEmpty
-                ? 'Execute as séries e avance para fechar o treino.'
-                : workout.description,
+            'Ficha ${workout.key} - ${workout.title}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: CoresApp.textoSecundario,
-              fontSize: 15,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
-              height: 1.35,
+              height: 1.25,
             ),
           ),
         ],
@@ -211,7 +204,7 @@ class _ProgressoTreino extends StatelessWidget {
                   '$completed/$total séries concluídas',
                   style: const TextStyle(
                     color: CoresApp.textoPrincipal,
-                    fontSize: 18,
+                    fontSize: 16,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
@@ -220,40 +213,89 @@ class _ProgressoTreino extends StatelessWidget {
                 _formatStopwatch(controlador.totalElapsedSeconds),
                 style: const TextStyle(
                   color: CoresApp.textoPrincipal,
-                  fontSize: 16,
+                  fontSize: 14,
                   fontWeight: FontWeight.w900,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: EspacamentoApp.pequeno),
-          Text(
-            'Status: ${controlador.statusFase}',
-            style: const TextStyle(
-              color: CoresApp.textoSecundario,
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-            ),
+          const SizedBox(height: 6),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'Status: ${controlador.statusFase}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: CoresApp.textoSecundario,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${controlador.kcalEstimadas.round()} kcal',
+                style: const TextStyle(
+                  color: Color(0xFF86EFAC),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'Exercícios ${controlador.exerciciosContabilizados}/${controlador.totalExercicios}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: CoresApp.textoSuave,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.all(
+                    Radius.circular(RaiosApp.total),
+                  ),
+                  child: LinearProgressIndicator(
+                    value: controlador.progressoExercicios.clamp(0, 1),
+                    minHeight: 5,
+                    color: Color.lerp(CoresApp.treinos, Colors.white, 0.18),
+                    backgroundColor: CoresApp.superficieElevada,
+                  ),
+                ),
+              ),
+            ],
           ),
           if (controlador.faseComContagemRegressiva) ...<Widget>[
-            const SizedBox(height: EspacamentoApp.pequeno),
+            const SizedBox(height: 4),
             Text(
               'Tempo restante: ${_formatStopwatch(controlador.segundosRestantesFase)}',
               style: const TextStyle(
                 color: CoresApp.treinos,
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: FontWeight.w900,
               ),
             ),
           ],
-          const SizedBox(height: EspacamentoApp.medio),
+          const SizedBox(height: 8),
           ClipRRect(
             borderRadius: const BorderRadius.all(
               Radius.circular(RaiosApp.total),
             ),
             child: LinearProgressIndicator(
               value: progress.clamp(0, 1),
-              minHeight: 9,
+              minHeight: 7,
               color: CoresApp.treinos,
               backgroundColor: CoresApp.superficieElevada,
             ),
@@ -268,6 +310,7 @@ class _CardExercicio extends StatelessWidget {
   const _CardExercicio({
     required this.exercicio,
     required this.indice,
+    required this.seriesTotal,
     required this.total,
     this.onAbrirMidia,
   });
@@ -275,71 +318,148 @@ class _CardExercicio extends StatelessWidget {
   final ExercicioWork exercicio;
   final int indice;
   final VoidCallback? onAbrirMidia;
+  final int seriesTotal;
   final int total;
 
   @override
   Widget build(BuildContext context) {
     return _Painel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    _Eyebrow('Exercício ${indice + 1}/$total'),
-                    const SizedBox(height: EspacamentoApp.pequeno),
-                    Text(
-                      exercicio.name,
-                      style: const TextStyle(
-                        color: CoresApp.textoPrincipal,
-                        fontSize: 26,
-                        fontWeight: FontWeight.w900,
-                        height: 1.05,
-                      ),
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(child: _Eyebrow('Exercício ${indice + 1}/$total')),
+                if (onAbrirMidia != null)
+                  SizedBox.square(
+                    dimension: 34,
+                    child: IconButton.filledTonal(
+                      padding: EdgeInsets.zero,
+                      onPressed: onAbrirMidia,
+                      icon: const Icon(Icons.play_circle_outline_rounded),
+                      color: CoresApp.treinos,
                     ),
-                  ],
-                ),
-              ),
-              if (onAbrirMidia != null)
-                IconButton.filledTonal(
-                  onPressed: onAbrirMidia,
-                  icon: const Icon(Icons.play_circle_outline_rounded),
-                  color: CoresApp.treinos,
-                ),
-            ],
-          ),
-          const SizedBox(height: EspacamentoApp.medio),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: _Metrica(label: 'Séries', value: '${exercicio.sets}'),
-              ),
-              const SizedBox(width: EspacamentoApp.pequeno),
-              Expanded(
-                child: _Metrica(label: 'Reps', value: exercicio.reps),
-              ),
-              const SizedBox(width: EspacamentoApp.pequeno),
-              Expanded(
-                child: _Metrica(label: 'Carga', value: exercicio.weight),
-              ),
-            ],
-          ),
-          if (exercicio.observation.trim().isNotEmpty) ...<Widget>[
-            const SizedBox(height: EspacamentoApp.medio),
-            Text(
-              exercicio.observation,
-              style: const TextStyle(
-                color: CoresApp.textoSecundario,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                height: 1.35,
-              ),
+                  ),
+              ],
             ),
+            if (onAbrirMidia != null) ...<Widget>[
+              const SizedBox(height: EspacamentoApp.pequeno),
+              _PreviewMidiaExercicio(
+                exercicio: exercicio,
+                onTap: onAbrirMidia!,
+              ),
+            ],
+            const SizedBox(height: EspacamentoApp.pequeno),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: _Metrica(label: 'Séries', value: '$seriesTotal'),
+                ),
+                const SizedBox(width: EspacamentoApp.pequeno),
+                Expanded(
+                  child: _Metrica(label: 'Reps', value: exercicio.reps),
+                ),
+                const SizedBox(width: EspacamentoApp.pequeno),
+                Expanded(
+                  child: _Metrica(label: 'Carga', value: exercicio.weight),
+                ),
+              ],
+            ),
+            if (exercicio.observation.trim().isNotEmpty) ...<Widget>[
+              const SizedBox(height: EspacamentoApp.pequeno),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: CoresApp.superficieElevada.withValues(alpha: 0.42),
+                  border: Border.all(color: CoresApp.borda),
+                  borderRadius: const BorderRadius.all(Radius.circular(16)),
+                ),
+                child: Text(
+                  exercicio.observation,
+                  style: const TextStyle(
+                    color: CoresApp.textoSecundario,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    height: 1.28,
+                  ),
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PreviewMidiaExercicio extends StatelessWidget {
+  const _PreviewMidiaExercicio({required this.exercicio, required this.onTap});
+
+  final ExercicioWork exercicio;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final String? thumbnail = _resolverThumbnailUrl(exercicio);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: const BorderRadius.all(Radius.circular(18)),
+      child: ClipRRect(
+        borderRadius: const BorderRadius.all(Radius.circular(18)),
+        child: AspectRatio(
+          aspectRatio: 16 / 7,
+          child: Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              if (thumbnail != null)
+                Image.network(thumbnail, fit: BoxFit.cover)
+              else
+                const ColoredBox(color: CoresApp.fundo),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: <Color>[
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.58),
+                    ],
+                  ),
+                ),
+              ),
+              Center(
+                child: CircleAvatar(
+                  radius: 24,
+                  backgroundColor: Colors.black.withValues(alpha: 0.55),
+                  child: const Icon(
+                    Icons.play_arrow_rounded,
+                    color: CoresApp.textoPrincipal,
+                    size: 32,
+                  ),
+                ),
+              ),
+              const Positioned(
+                left: 10,
+                bottom: 8,
+                child: Text(
+                  'Visualizar exercício',
+                  style: TextStyle(
+                    color: CoresApp.textoPrincipal,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -353,78 +473,274 @@ class _SeriesList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final int total = controlador.totalSeriesExercicio(exercicio);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const _Eyebrow('Séries'),
-        const SizedBox(height: EspacamentoApp.pequeno),
-        for (int index = 0; index < exercicio.sets; index++) ...<Widget>[
-          _SerieCard(
-            concluida: controlador.serieConcluida(exercicio.id, index + 1),
-            numero: index + 1,
-            onTap: () {
-              controlador.alternarSerie(exercicio.id, index + 1);
+        Row(
+          children: <Widget>[
+            const Expanded(child: _Eyebrow('Séries')),
+            TextButton.icon(
+              onPressed: controlador.edicaoSeriesBloqueada
+                  ? null
+                  : () => controlador.adicionarSerie(exercicio),
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text('Adicionar'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        FilledButton.icon(
+          onPressed: controlador.serieEmAndamento
+              ? null
+              : controlador.iniciarSerieAtual,
+          icon: const Icon(Icons.play_arrow_rounded),
+          label: Text(controlador.textoBotaoSerie),
+        ),
+        const SizedBox(height: 6),
+        Expanded(
+          child: ListView.separated(
+            physics: const ClampingScrollPhysics(),
+            padding: EdgeInsets.zero,
+            itemCount: total,
+            separatorBuilder: (BuildContext context, int index) =>
+                const SizedBox(height: 6),
+            itemBuilder: (BuildContext context, int index) {
+              final int numero = index + 1;
+              final SerieDraftWork draft = controlador.draftSerie(
+                exercicio.id,
+                numero,
+              );
+
+              return _SerieCard(
+                bloqueado: controlador.edicaoSeriesBloqueada,
+                concluida: controlador.serieConcluida(exercicio.id, numero),
+                descanso: controlador.serieAtualEmDescanso(
+                  exercicio.id,
+                  numero,
+                ),
+                draft: draft,
+                emExecucao: controlador.serieAtualEmExecucao(
+                  exercicio.id,
+                  numero,
+                ),
+                numero: numero,
+                onPesoChanged: (String value) {
+                  controlador.atualizarDraftSerie(
+                    exercicio.id,
+                    numero,
+                    peso: value,
+                  );
+                },
+                onRepsChanged: (String value) {
+                  controlador.atualizarDraftSerie(
+                    exercicio.id,
+                    numero,
+                    reps: value,
+                  );
+                },
+                onTap: () {
+                  controlador.alternarSerie(exercicio.id, numero);
+                },
+              );
             },
           ),
-          const SizedBox(height: EspacamentoApp.pequeno),
-        ],
+        ),
       ],
+    );
+  }
+}
+
+class _AcoesExecucao extends StatelessWidget {
+  const _AcoesExecucao({
+    required this.iconeAvancar,
+    required this.onAvancar,
+    required this.textoAvancar,
+    this.onClose,
+  });
+
+  final IconData iconeAvancar;
+  final VoidCallback onAvancar;
+  final VoidCallback? onClose;
+  final String textoAvancar;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        8,
+        4,
+        8,
+        MediaQuery.paddingOf(context).bottom + 8,
+      ),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: onClose,
+              icon: const Icon(Icons.arrow_back_rounded),
+              label: const Text('Voltar'),
+            ),
+          ),
+          const SizedBox(width: EspacamentoApp.pequeno),
+          Expanded(
+            child: FilledButton.icon(
+              onPressed: onAvancar,
+              icon: Icon(iconeAvancar),
+              label: Text(textoAvancar),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
 class _SerieCard extends StatelessWidget {
   const _SerieCard({
+    required this.bloqueado,
     required this.concluida,
+    required this.descanso,
+    required this.draft,
+    required this.emExecucao,
     required this.numero,
+    required this.onPesoChanged,
+    required this.onRepsChanged,
     required this.onTap,
   });
 
+  final bool bloqueado;
   final bool concluida;
+  final bool descanso;
+  final SerieDraftWork draft;
+  final bool emExecucao;
   final int numero;
+  final ValueChanged<String> onPesoChanged;
+  final ValueChanged<String> onRepsChanged;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: const BorderRadius.all(Radius.circular(18)),
-      child: Container(
-        padding: const EdgeInsets.all(EspacamentoApp.medio),
-        decoration: BoxDecoration(
-          color: concluida
-              ? CoresApp.treinos.withValues(alpha: 0.13)
-              : CoresApp.fundo.withValues(alpha: 0.35),
-          border: Border.all(
-            color: concluida
-                ? CoresApp.treinos.withValues(alpha: 0.72)
-                : CoresApp.borda,
+    final bool ativa = emExecucao || descanso;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: ativa
+            ? CoresApp.treinos.withValues(alpha: 0.18)
+            : concluida
+            ? CoresApp.treinos.withValues(alpha: 0.13)
+            : CoresApp.fundo.withValues(alpha: 0.35),
+        border: Border.all(
+          color: ativa
+              ? Colors.white.withValues(alpha: 0.55)
+              : concluida
+              ? CoresApp.treinos.withValues(alpha: 0.72)
+              : CoresApp.borda,
+        ),
+        borderRadius: const BorderRadius.all(Radius.circular(18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  ativa
+                      ? emExecucao
+                            ? 'Série $numero em execução'
+                            : 'Série $numero em descanso'
+                      : 'Série $numero',
+                  style: const TextStyle(
+                    color: CoresApp.textoPrincipal,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              IconButton.filledTonal(
+                onPressed: bloqueado ? null : onTap,
+                icon: Icon(
+                  concluida ? Icons.check_rounded : Icons.circle_outlined,
+                ),
+                color: concluida ? CoresApp.treinos : CoresApp.textoSuave,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 34,
+                  height: 34,
+                ),
+              ),
+            ],
           ),
-          borderRadius: const BorderRadius.all(Radius.circular(18)),
-        ),
-        child: Row(
-          children: <Widget>[
-            Text(
-              'Série $numero',
-              style: const TextStyle(
-                color: CoresApp.textoPrincipal,
-                fontWeight: FontWeight.w900,
+          const SizedBox(height: 6),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: _CampoSerie(
+                  enabled: !bloqueado,
+                  initialValue: draft.reps,
+                  label: 'Reps feitas',
+                  onChanged: onRepsChanged,
+                ),
               ),
-            ),
-            const Spacer(),
-            CircleAvatar(
-              radius: 17,
-              backgroundColor: concluida
-                  ? CoresApp.treinos
-                  : CoresApp.superficieElevada,
-              child: Icon(
-                Icons.check_rounded,
-                color: concluida ? CoresApp.fundo : CoresApp.textoSuave,
-                size: 20,
+              const SizedBox(width: 8),
+              Expanded(
+                child: _CampoSerie(
+                  enabled: !bloqueado,
+                  initialValue: draft.peso,
+                  label: 'Peso kg',
+                  onChanged: onPesoChanged,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CampoSerie extends StatelessWidget {
+  const _CampoSerie({
+    required this.enabled,
+    required this.initialValue,
+    required this.label,
+    required this.onChanged,
+  });
+
+  final bool enabled;
+  final String initialValue;
+  final String label;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      enabled: enabled,
+      initialValue: initialValue,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      onChanged: onChanged,
+      style: const TextStyle(
+        color: CoresApp.textoPrincipal,
+        fontSize: 13,
+        fontWeight: FontWeight.w800,
+      ),
+      decoration: InputDecoration(
+        isDense: true,
+        labelText: label,
+        labelStyle: const TextStyle(
+          color: CoresApp.textoSuave,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
         ),
+        filled: true,
+        fillColor: CoresApp.superficieElevada.withValues(alpha: 0.42),
+        border: const OutlineInputBorder(
+          borderRadius: BorderRadius.all(Radius.circular(14)),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       ),
     );
   }
@@ -527,59 +843,65 @@ class _ModalMidiaExercicioState extends State<_ModalMidiaExercicio> {
 
     return Container(
       color: Colors.black.withValues(alpha: 0.82),
-      child: Center(
-        child: Container(
-          margin: const EdgeInsets.all(EspacamentoApp.medio),
-          padding: const EdgeInsets.all(EspacamentoApp.medio),
-          decoration: BoxDecoration(
-            color: CoresApp.superficie,
-            border: Border.all(color: CoresApp.treinos.withValues(alpha: 0.42)),
-            borderRadius: const BorderRadius.all(Radius.circular(24)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      widget.exercicio.name,
-                      style: const TextStyle(
-                        color: CoresApp.textoPrincipal,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w900,
+      child: SafeArea(
+        child: Center(
+          child: Container(
+            width: double.infinity,
+            height: MediaQuery.sizeOf(context).height * 0.9,
+            margin: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: CoresApp.superficie,
+              border: Border.all(
+                color: CoresApp.treinos.withValues(alpha: 0.42),
+              ),
+              borderRadius: const BorderRadius.all(Radius.circular(20)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: Text(
+                        widget.exercicio.name,
+                        style: const TextStyle(
+                          color: CoresApp.textoPrincipal,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: widget.onClose,
-                    icon: const Icon(Icons.close_rounded),
-                    color: CoresApp.textoSecundario,
-                  ),
-                ],
-              ),
-              const SizedBox(height: EspacamentoApp.pequeno),
-              ClipRRect(
-                borderRadius: const BorderRadius.all(Radius.circular(18)),
-                child: AspectRatio(
-                  aspectRatio: 9 / 16,
-                  child: _webController != null
-                      ? WebViewWidget(controller: _webController!)
-                      : imageUrl.isEmpty
-                      ? const ColoredBox(
-                          color: CoresApp.fundo,
-                          child: Center(
-                            child: Text(
-                              'Mídia indisponível.',
-                              style: TextStyle(color: CoresApp.textoSecundario),
-                            ),
-                          ),
-                        )
-                      : Image.network(imageUrl, fit: BoxFit.contain),
+                    IconButton(
+                      onPressed: widget.onClose,
+                      icon: const Icon(Icons.close_rounded),
+                      color: CoresApp.textoSecundario,
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                const SizedBox(height: EspacamentoApp.pequeno),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.all(Radius.circular(16)),
+                    child: _webController != null
+                        ? WebViewWidget(controller: _webController!)
+                        : imageUrl.isEmpty
+                        ? const ColoredBox(
+                            color: CoresApp.fundo,
+                            child: Center(
+                              child: Text(
+                                'Mídia indisponível.',
+                                style: TextStyle(
+                                  color: CoresApp.textoSecundario,
+                                ),
+                              ),
+                            ),
+                          )
+                        : Image.network(imageUrl, fit: BoxFit.contain),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -596,7 +918,7 @@ class _Metrica extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(EspacamentoApp.pequeno),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
       decoration: BoxDecoration(
         color: CoresApp.superficieElevada.withValues(alpha: 0.55),
         border: Border.all(color: CoresApp.borda),
@@ -607,20 +929,22 @@ class _Metrica extends StatelessWidget {
         children: <Widget>[
           Text(
             label.toUpperCase(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: CoresApp.textoSuave,
-              fontSize: 9,
+              fontSize: 8,
               fontWeight: FontWeight.w900,
-              letterSpacing: 2,
+              letterSpacing: 1.3,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Text(
             value,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: CoresApp.textoPrincipal,
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: FontWeight.w900,
             ),
           ),
@@ -653,7 +977,7 @@ class _Painel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(EspacamentoApp.medio),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: CoresApp.fundo.withValues(alpha: 0.34),
         border: Border.all(color: CoresApp.borda),
@@ -675,9 +999,9 @@ class _Eyebrow extends StatelessWidget {
       texto.toUpperCase(),
       style: const TextStyle(
         color: CoresApp.treinos,
-        fontSize: 10,
+        fontSize: 9,
         fontWeight: FontWeight.w900,
-        letterSpacing: 4,
+        letterSpacing: 3,
       ),
     );
   }
@@ -692,7 +1016,8 @@ bool _temMidia(ExercicioWork exercicio) {
 
 String? _resolverEmbedUrl(ExercicioWork exercicio) {
   if ((exercicio.mediaYoutubeVideoId ?? '').isNotEmpty) {
-    return 'https://www.youtube.com/embed/${exercicio.mediaYoutubeVideoId}';
+    final String videoId = exercicio.mediaYoutubeVideoId!;
+    return 'https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&loop=1&playlist=$videoId&playsinline=1';
   }
 
   final String youtubeUrl = exercicio.mediaYoutubeUrl ?? '';
@@ -701,7 +1026,8 @@ String? _resolverEmbedUrl(ExercicioWork exercicio) {
   ).firstMatch(youtubeUrl);
 
   if (match != null) {
-    return 'https://www.youtube.com/embed/${match.group(1)}';
+    final String videoId = match.group(1) ?? '';
+    return 'https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&loop=1&playlist=$videoId&playsinline=1';
   }
 
   final String videoUrl = exercicio.mediaVideoUrl ?? '';
@@ -710,12 +1036,38 @@ String? _resolverEmbedUrl(ExercicioWork exercicio) {
     final String safeVideoUrl = const HtmlEscape().convert(videoUrl);
 
     return Uri.dataFromString(
-      '<html><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center"><video src="$safeVideoUrl" controls autoplay playsinline style="width:100%;height:100%;object-fit:contain"></video></body></html>',
+      '<html><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center"><video src="$safeVideoUrl" controls autoplay loop muted playsinline style="width:100%;height:100%;object-fit:contain"></video></body></html>',
       mimeType: 'text/html',
     ).toString();
   }
 
   return null;
+}
+
+String? _resolverThumbnailUrl(ExercicioWork exercicio) {
+  final String imageUrl = exercicio.mediaImageUrl ?? '';
+
+  if (imageUrl.isNotEmpty) {
+    return imageUrl;
+  }
+
+  final String videoId = (exercicio.mediaYoutubeVideoId ?? '').isNotEmpty
+      ? exercicio.mediaYoutubeVideoId!
+      : _extrairYoutubeVideoId(exercicio.mediaYoutubeUrl ?? '') ?? '';
+
+  if (videoId.isEmpty) {
+    return null;
+  }
+
+  return 'https://img.youtube.com/vi/$videoId/hqdefault.jpg';
+}
+
+String? _extrairYoutubeVideoId(String youtubeUrl) {
+  final RegExpMatch? match = RegExp(
+    r'(?:youtu\.be/|v=|embed/)([A-Za-z0-9_-]{8,})',
+  ).firstMatch(youtubeUrl);
+
+  return match?.group(1);
 }
 
 String _formatStopwatch(int seconds) {

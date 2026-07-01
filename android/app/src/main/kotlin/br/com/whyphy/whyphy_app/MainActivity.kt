@@ -140,6 +140,9 @@ class MainActivity : FlutterActivity() {
                 "compartilharTexto" -> {
                     result.success(compartilharTextoWork(call.arguments))
                 }
+                "compartilharImagem" -> {
+                    result.success(compartilharImagemWork(call.arguments))
+                }
                 "abrirCamera" -> {
                     result.success(abrirCameraCompartilhamentoWork(call.arguments))
                 }
@@ -541,6 +544,76 @@ class MainActivity : FlutterActivity() {
         } catch (erro: Exception) {
             false
         }
+    }
+
+    private fun compartilharImagemWork(arguments: Any?): Boolean {
+        val map = arguments as? Map<*, *> ?: return false
+        val base64 = (map["base64"] as? String)?.trim().orEmpty()
+        val texto = (map["texto"] as? String)?.trim().orEmpty()
+        val titulo = (map["titulo"] as? String)?.trim().orEmpty()
+            .ifBlank { "Compartilhar treino WhyPhy" }
+        val mimeType = (map["mimeType"] as? String)?.trim().orEmpty()
+            .ifBlank { "image/png" }
+        val nomeArquivo = (map["nomeArquivo"] as? String)?.trim().orEmpty()
+            .ifBlank { "whyphy-work.png" }
+
+        if (base64.isEmpty()) {
+            return false
+        }
+
+        return try {
+            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            val uri = salvarImagemWorkCompartilhavel(nomeArquivo, mimeType, bytes)
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                if (texto.isNotBlank()) {
+                    putExtra(Intent.EXTRA_TEXT, texto)
+                }
+                putExtra(Intent.EXTRA_TITLE, titulo)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(sendIntent, titulo).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(chooser)
+            true
+        } catch (erro: Exception) {
+            false
+        }
+    }
+
+    private fun salvarImagemWorkCompartilhavel(
+        nomeArquivo: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ): Uri {
+        val resolver = contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, nomeArquivo)
+            put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_PICTURES}/WhyPhy",
+                )
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("work_share_uri_indisponivel")
+
+        resolver.openOutputStream(uri)?.use { output ->
+            output.write(bytes)
+        } ?: throw IllegalStateException("work_share_output_indisponivel")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }
+
+        return uri
     }
 
     private fun abrirCameraCompartilhamentoWork(arguments: Any?): Boolean {

@@ -302,8 +302,13 @@ class SnapshotSessaoWork {
   SnapshotSessaoWork avancarDescanso(int agoraMs) {
     final FaseSessaoWork proximaFase = FaseSessaoWork.exercicioRodando;
     final bool eraTransicao = phase == FaseSessaoWork.transicaoProximoExercicio;
+    final SnapshotSessaoWork base =
+        phase == FaseSessaoWork.descansoSerie ||
+            phase == FaseSessaoWork.transicaoProximoExercicio
+        ? copiarCom(updatedAtMs: agoraMs)
+        : _recalcularCronometro(agoraMs);
 
-    return recalcular(agoraMs).copiarCom(
+    return base.copiarCom(
       endsAtMs: null,
       exerciseIndex: eraTransicao ? exerciseIndex + 1 : exerciseIndex,
       pausedFromPhase: null,

@@ -57,13 +57,16 @@ class _WorkViewState extends State<WorkView> {
       child: AnimatedBuilder(
         animation: _controlador,
         builder: (BuildContext context, _) {
+          final bool etapaExecucao =
+              _controlador.etapa == EtapaWorkNativo.exercicio;
+
           return Stack(
             fit: StackFit.expand,
             children: <Widget>[
               SafeArea(
                 child: Column(
                   children: <Widget>[
-                    _WorkHeader(onClose: widget.onClose),
+                    if (!etapaExecucao) _WorkHeader(onClose: widget.onClose),
                     Expanded(child: _buildConteudo()),
                   ],
                 ),
@@ -116,8 +119,14 @@ class _WorkViewState extends State<WorkView> {
       EtapaWorkNativo.exercicio => WorkExecutar(
         controlador: _controlador,
         onClose: widget.onClose,
+        onHome: _voltarParaHome,
       ),
     };
+  }
+
+  void _voltarParaHome() {
+    widget.onAbrirRotaWeb?.call('/users/home');
+    widget.onClose?.call();
   }
 
   void _abrirFeedback() {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 
 class ServicoCompartilhamentoWork {
@@ -21,6 +23,34 @@ class ServicoCompartilhamentoWork {
             'compartilharTexto',
             <String, String>{'texto': texto, 'tipo': tipo, 'titulo': titulo},
           ) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> compartilharImagem({
+    required Uint8List bytesPng,
+    required String texto,
+    required String titulo,
+    String tipo = 'simples',
+  }) async {
+    if (bytesPng.isEmpty) {
+      return false;
+    }
+
+    try {
+      return await _canal
+              .invokeMethod<bool>('compartilharImagem', <String, String>{
+                'base64': base64Encode(bytesPng),
+                'mimeType': 'image/png',
+                'nomeArquivo': 'whyphy-work-$tipo.png',
+                'texto': texto,
+                'tipo': tipo,
+                'titulo': titulo,
+              }) ??
           false;
     } on MissingPluginException {
       return false;
