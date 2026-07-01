@@ -68,6 +68,8 @@ private const val CANAL_NOTIFICACAO_TREINO_LOCAL = "WhyPhyWorkoutNotifications"
 private const val CANAL_NOTIFICACAO_REFEICAO_LOCAL = "WhyPhyMealNotifications"
 private const val PREFS_NOTIFICACOES_LOCAIS = "whyphy_notificacoes_locais"
 private const val PREFS_AGENDAMENTOS_NOTIFICACAO = "agendamentos"
+private const val ID_NOTIFICACAO_RETORNO_WORK = "whyphy_work_retorno_exercicio"
+private const val ROTA_WORK_NATIVO = "/work?native_sync=1"
 
 class MainActivity : FlutterActivity() {
     private var arquivoSelecionadoCallback: ValueCallback<Array<Uri>>? = null
@@ -993,7 +995,10 @@ class NotificacaoLocalWhyPhyReceiver : BroadcastReceiver() {
 
 class BootWhyPhyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+        if (
+            intent.action == Intent.ACTION_BOOT_COMPLETED ||
+            intent.action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED
+        ) {
             AgendadorNotificacaoLocalWhyPhy.reagendarPendentes(context)
         }
     }
@@ -2289,60 +2294,86 @@ private class WebViewWhyPhy(
         view.evaluateJavascript(script, null)
     }
 
-    private fun injetarBridgeNotificacoesLocais(view: WebView) {
-        val script = """
-            (function() {
-              if (window.__whyphyAppLocalNotificationBridge) return;
-              window.__whyphyAppLocalNotificationBridge = true;
+private fun injetarBridgeNotificacoesLocais(view: WebView) {
+    val script = """
+        (function() {
+          window.__whyphyAppLocalNotificationBridge = true;
 
-              function enviarParaApp(payload) {
-                try {
-                  var texto = typeof payload === "string"
-                    ? payload
-                    : JSON.stringify(payload || {});
+          var ID_NOTIFICACAO_RETORNO_WORK = "whyphy_work_retorno_exercicio";
 
-                  if (window.WhyPhyApp && window.WhyPhyApp.agendarNotificacaoLocal) {
-                    window.WhyPhyApp.agendarNotificacaoLocal(texto);
-                    return true;
-                  }
-                } catch (erro) {}
+          function enviarParaApp(payload) {
+            try {
+              var texto = typeof payload === "string"
+                ? payload
+                : JSON.stringify(payload || {});
+
+              if (window.WhyPhyApp && window.WhyPhyApp.agendarNotificacaoLocal) {
+                window.WhyPhyApp.agendarNotificacaoLocal(texto);
+                return true;
+              }
+            } catch (erro) {}
+            return false;
+          }
+
+          function cancelarNoApp(id) {
+            try {
+              var normalizado = String(id || "").trim();
+
+              if (!normalizado) {
                 return false;
               }
 
-              function cancelarNoApp(id) {
-                try {
-                  if (window.WhyPhyApp && window.WhyPhyApp.cancelarNotificacaoLocal) {
-                    window.WhyPhyApp.cancelarNotificacaoLocal(String(id || ""));
-                    return true;
-                  }
-                } catch (erro) {}
-                return false;
+              if (window.WhyPhyApp && window.WhyPhyApp.cancelarNotificacaoLocal) {
+                window.WhyPhyApp.cancelarNotificacaoLocal(normalizado);
+                return true;
               }
+            } catch (erro) {}
+            return false;
+          }
 
-              window.WhyPhyWorkoutNotifications = window.WhyPhyWorkoutNotifications || {};
-              window.WhyPhyMealNotifications = window.WhyPhyMealNotifications || {};
+          function cancelarWorkout(id) {
+            var cancelou = false;
+            var idOriginal = String(id || "").trim();
 
-              window.WhyPhyWorkoutNotifications.postMessage = function(payload) {
-                return enviarParaApp(payload);
-              };
+            if (idOriginal) {
+              cancelou = cancelarNoApp(idOriginal) || cancelou;
+            }
 
-              window.WhyPhyMealNotifications.postMessage = function(payload) {
-                return enviarParaApp(payload);
-              };
+            cancelou = cancelarNoApp(ID_NOTIFICACAO_RETORNO_WORK) || cancelou;
 
-              window.WhyPhyWorkoutNotifications.cancel = function(id) {
-                return cancelarNoApp(id);
-              };
+            return cancelou;
+          }
 
-              window.WhyPhyMealNotifications.cancel = function(id) {
-                return cancelarNoApp(id);
-              };
-            })();
-        """.trimIndent()
+          window.WhyPhyWorkoutNotifications = window.WhyPhyWorkoutNotifications || {};
+          window.WhyPhyMealNotifications = window.WhyPhyMealNotifications || {};
 
-        view.evaluateJavascript(script, null)
-    }
+          // IMPORTANTE:
+          // Treino/descanso não pode mais ser agendado pela WebView.
+          // O retorno ao exercício será controlado pelo Work nativo.
+          window.WhyPhyWorkoutNotifications.postMessage = function(payload) {
+            try {
+              console.log("[WhyPhyApp] workout notification ignorada pelo bridge nativo", payload);
+            } catch (erro) {}
+            return false;
+          };
 
+          // Refeição/água continuam usando a ponte web.
+          window.WhyPhyMealNotifications.postMessage = function(payload) {
+            return enviarParaApp(payload);
+          };
+
+          window.WhyPhyWorkoutNotifications.cancel = function(id) {
+            return cancelarWorkout(id);
+          };
+
+          window.WhyPhyMealNotifications.cancel = function(id) {
+            return cancelarNoApp(id);
+          };
+        })();
+    """.trimIndent()
+
+    view.evaluateJavascript(script, null)
+}
     private fun ehRotaLogout(uri: Uri): Boolean {
         if (!hostPermitido(uri.host.orEmpty())) {
             return false
@@ -2516,17 +2547,104 @@ private class BridgeWhyPhyApp(
         }
     }
 
-    private fun encaminharEventoWork(metodo: String, payloadJson: String) {
-        mainHandler.post {
-            canalEventosWebview.invokeMethod(
-                "workNativoEvento",
-                mapOf(
-                    "metodo" to metodo,
-                    "payloadJson" to normalizarPayloadJson(payloadJson),
-                ),
-            )
-        }
+   private fun encaminharEventoWork(metodo: String, payloadJson: String) {
+    val payloadNormalizado = normalizarPayloadJson(payloadJson)
+
+    mainHandler.post {
+        tratarNotificacaoRetornoWork(metodo, payloadNormalizado)
+
+        canalEventosWebview.invokeMethod(
+            "workNativoEvento",
+            mapOf(
+                "metodo" to metodo,
+                "payloadJson" to payloadNormalizado,
+            ),
+        )
     }
+}
+
+private fun tratarNotificacaoRetornoWork(metodo: String, payloadJson: String) {
+    if (
+        metodo == "finalizarWorkNativo" ||
+        metodo == "cancelarDescansoWorkNativo"
+    ) {
+        cancelarNotificacaoRetornoWork()
+        return
+    }
+
+    val payload = try {
+        JSONObject(payloadJson)
+    } catch (_: Exception) {
+        JSONObject()
+    }
+
+    val phase = payload.optString("phase").lowercase(Locale.ROOT)
+    val status = payload.optString("status").lowercase(Locale.ROOT)
+    val quandoMillis = payload.optLong("endsAtMs", 0L)
+
+    val faseComRetorno =
+        phase.contains("descanso") ||
+        phase.contains("transicao")
+
+    val sessaoEncerrada =
+        status.contains("concluido") ||
+        status.contains("cancelado") ||
+        phase.contains("pausado") ||
+        phase.contains("concluido") ||
+        phase.contains("cancelado")
+
+    if (
+        !faseComRetorno ||
+        sessaoEncerrada ||
+        quandoMillis <= System.currentTimeMillis() + 1500L
+    ) {
+        cancelarNotificacaoRetornoWork()
+        return
+    }
+
+    val routePathRaw = payload.optString("routePath")
+        .trim()
+        .ifBlank { ROTA_WORK_NATIVO }
+
+    val routePath = if (
+        routePathRaw.startsWith("/") &&
+        !routePathRaw.startsWith("//")
+    ) {
+        routePathRaw
+    } else {
+        ROTA_WORK_NATIVO
+    }
+
+    val mensagem = if (phase.contains("transicao")) {
+        "Próximo exercício liberado."
+    } else {
+        "Hora de voltar para a próxima série."
+    }
+
+    AgendadorNotificacaoLocalWhyPhy.cancelar(
+        context,
+        ID_NOTIFICACAO_RETORNO_WORK,
+    )
+
+    AgendadorNotificacaoLocalWhyPhy.agendar(
+        context,
+        AgendamentoNotificacaoLocal(
+            id = ID_NOTIFICACAO_RETORNO_WORK,
+            canal = CANAL_NOTIFICACAO_TREINO_LOCAL,
+            routePath = routePath,
+            titulo = "WhyPhy",
+            mensagem = mensagem,
+            quandoMillis = quandoMillis,
+        ),
+    )
+}
+
+private fun cancelarNotificacaoRetornoWork() {
+    AgendadorNotificacaoLocalWhyPhy.cancelar(
+        context,
+        ID_NOTIFICACAO_RETORNO_WORK,
+    )
+}
 
     private fun normalizarPayloadJson(payloadJson: String): String {
         val texto = payloadJson.trim()
@@ -2583,25 +2701,48 @@ private class BridgeWhyPhyApp(
         }
     }
 
-    @JavascriptInterface
-    fun agendarNotificacaoLocal(solicitacaoJson: String) {
-        Log.d("WhyPhyLocalNotif", "bridge agendarNotificacaoLocal: $solicitacaoJson")
+   @JavascriptInterface
+fun agendarNotificacaoLocal(solicitacaoJson: String) {
+    Log.d("WhyPhyLocalNotif", "bridge agendarNotificacaoLocal: $solicitacaoJson")
 
-        mainHandler.post {
-            try {
-                agendarNotificacaoLocalJson(JSONObject(solicitacaoJson.ifBlank { "{}" }))
-            } catch (erro: Exception) {
-                Log.e("WhyPhyLocalNotif", "erro ao agendar", erro)
-                canalEventosWebview.invokeMethod(
-                    "notificacaoWeb",
-                    mapOf(
-                        "mensagem" to "Não foi possível agendar a notificação local.",
-                        "modulo" to "",
-                    ),
-                )
+    val payload = try {
+        JSONObject(solicitacaoJson.ifBlank { "{}" })
+    } catch (erro: Exception) {
+        JSONObject()
+    }
+
+    if (ehNotificacaoWorkoutDaWeb(payload)) {
+        val id = idNotificacaoPayload(payload).orEmpty()
+
+        Log.d(
+            "WhyPhyLocalNotif",
+            "ignorado agendamento workout vindo da WebView id=$id type=${payload.optString("type")}",
+        )
+
+        if (id.isNotBlank()) {
+            mainHandler.post {
+                cancelarNotificacaoLocalId(id)
             }
         }
+
+        return
     }
+
+    mainHandler.post {
+        try {
+            agendarNotificacaoLocalJson(payload)
+        } catch (erro: Exception) {
+            Log.e("WhyPhyLocalNotif", "erro ao agendar", erro)
+            canalEventosWebview.invokeMethod(
+                "notificacaoWeb",
+                mapOf(
+                    "mensagem" to "Não foi possível agendar a notificação local.",
+                    "modulo" to "",
+                ),
+            )
+        }
+    }
+}
 
     @JavascriptInterface
     fun cancelarNotificacaoLocal(id: String) {
@@ -2611,6 +2752,19 @@ private class BridgeWhyPhyApp(
             cancelarNotificacaoLocalId(id)
         }
     }
+    private fun ehNotificacaoWorkoutDaWeb(payload: JSONObject): Boolean {
+    val type = payload.optString("type").lowercase(Locale.ROOT).trim()
+    val id = idNotificacaoPayload(payload).orEmpty().lowercase(Locale.ROOT)
+    val routePath = payload.optString("routePath").lowercase(Locale.ROOT).trim()
+
+    return type.contains("workout") ||
+        type.contains("treino") ||
+        type.contains("rest") ||
+        type.contains("descanso") ||
+        id.startsWith("workout-") ||
+        id.contains("workout-card") ||
+        routePath.startsWith("/work")
+}
 
     private fun idNotificacaoPayload(payload: JSONObject): String? {
         val notificationId = payload.optString("notificationId").trim()
