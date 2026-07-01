@@ -9,6 +9,7 @@ enum EtapaWorkNativo {
   carregando,
   historico,
   selecao,
+  resumo,
   exercicio,
   cardio,
   concluido,
@@ -35,11 +36,22 @@ class ControladorWorkNativo extends ChangeNotifier {
   TaxaKcalWork? _taxaKcal;
   Timer? _timer;
   ResultadoConclusaoWork? _resultadoConclusao;
+
   final Map<String, Set<int>> _seriesConcluidas = <String, Set<int>>{};
   final Map<String, int> _seriesPlanejadasPorExercicio = <String, int>{};
   final Map<String, Map<int, SerieDraftWork>> _seriesDrafts =
       <String, Map<int, SerieDraftWork>>{};
+
   bool _sincronizacaoEmAndamento = false;
+
+  // Pausa somente da série. O cronômetro geral continua rodando.
+  int? _segundosRestantesSeriePausada;
+
+  // Quando termina o último exercício, fica aguardando avançar para o cardio.
+  bool _aguardandoCardio = false;
+
+  // O cardio entra preparado, mas só começa quando o aluno clicar.
+  bool _cardioIniciado = false;
 
   BootstrapWorkMobile? get bootstrap => _bootstrap;
   EtapaWorkNativo get etapa => _etapa;
@@ -48,6 +60,8 @@ class ControladorWorkNativo extends ChangeNotifier {
   SnapshotSessaoWork? get snapshot => _snapshot;
   TaxaKcalWork? get taxaKcal => _taxaKcal;
   FichaWork? get workout => _workout;
+
+  bool get cardioIniciado => _cardioIniciado;
 
   int get cardioElapsedSeconds {
     return _snapshot?.cardioElapsedSeconds ?? 0;
@@ -66,6 +80,10 @@ class ControladorWorkNativo extends ChangeNotifier {
   }
 
   int get segundosRestantesFase {
+    if (seriePausada) {
+      return _segundosRestantesSeriePausada ?? 0;
+    }
+
     final SnapshotSessaoWork? atual = _snapshot;
 
     if (atual == null) {
@@ -77,17 +95,33 @@ class ControladorWorkNativo extends ChangeNotifier {
 
   bool get faseComContagemRegressiva {
     final FaseSessaoWork? fase = _snapshot?.phase;
+
+    if (seriePausada) {
+      return true;
+    }
+
     return (fase == FaseSessaoWork.exercicioRodando &&
             _snapshot?.endsAtMs != null) ||
         fase == FaseSessaoWork.descansoSerie ||
         fase == FaseSessaoWork.transicaoProximoExercicio ||
-        fase == FaseSessaoWork.cardioRodando;
+        (fase == FaseSessaoWork.cardioRodando && _cardioIniciado);
   }
 
+  // Agora "pular descanso" vale apenas para descanso entre séries.
+  // Transição entre exercícios deve mostrar Avançar.
   bool get podePularDescanso {
     final FaseSessaoWork? fase = _snapshot?.phase;
-    return fase == FaseSessaoWork.descansoSerie ||
-        fase == FaseSessaoWork.transicaoProximoExercicio;
+    return fase == FaseSessaoWork.descansoSerie;
+  }
+
+  bool get descansoEntreExercicios {
+    return _snapshot?.phase == FaseSessaoWork.transicaoProximoExercicio;
+  }
+
+  bool get descansoEntreExerciciosFinalizado {
+    final SnapshotSessaoWork? atual = _snapshot;
+    return atual?.phase == FaseSessaoWork.transicaoProximoExercicio &&
+        atual?.endsAtMs == null;
   }
 
   bool get pausado {
@@ -170,9 +204,21 @@ class ControladorWorkNativo extends ChangeNotifier {
   String get statusFase {
     final FaseSessaoWork? fase = _snapshot?.phase;
 
+    if (seriePausada) {
+      return 'série pausada';
+    }
+
+    if (descansoEntreExerciciosFinalizado) {
+      return _aguardandoCardio ? 'pronto para cardio' : 'pronto para avançar';
+    }
+
+    if (_etapa == EtapaWorkNativo.cardio && !_cardioIniciado) {
+      return 'cardio pronto para iniciar';
+    }
+
     return switch (fase) {
       FaseSessaoWork.descansoSerie => 'descanso',
-      FaseSessaoWork.transicaoProximoExercicio => 'próximo exercício',
+      FaseSessaoWork.transicaoProximoExercicio => 'descanso entre exercícios',
       FaseSessaoWork.cardioRodando => 'cardio em andamento',
       FaseSessaoWork.pausado => 'pausado',
       FaseSessaoWork.concluido => 'concluído',
@@ -189,43 +235,182 @@ class ControladorWorkNativo extends ChangeNotifier {
     return _seriesConcluidas[exerciseId]?.contains(setNumber) ?? false;
   }
 
+  bool get serieExecutando {
+    final SnapshotSessaoWork? atual = _snapshot;
+
+    return atual?.phase == FaseSessaoWork.exercicioRodando &&
+        atual?.endsAtMs != null &&
+        _segundosRestantesSeriePausada == null;
+  }
+
+  bool get seriePausada {
+    final SnapshotSessaoWork? atual = _snapshot;
+
+    return atual?.phase == FaseSessaoWork.exercicioRodando &&
+        atual?.endsAtMs == null &&
+        _segundosRestantesSeriePausada != null;
+  }
+
   bool get serieEmAndamento {
     final FaseSessaoWork? fase = _snapshot?.phase;
-    return _snapshot?.endsAtMs != null &&
-        (fase == FaseSessaoWork.exercicioRodando ||
-            fase == FaseSessaoWork.descansoSerie ||
-            fase == FaseSessaoWork.transicaoProximoExercicio);
+
+    return serieExecutando ||
+        seriePausada ||
+        fase == FaseSessaoWork.descansoSerie ||
+        fase == FaseSessaoWork.transicaoProximoExercicio;
   }
 
   bool get edicaoSeriesBloqueada {
     return serieEmAndamento;
   }
 
+  bool get podeAcionarBotaoSerie {
+    final SnapshotSessaoWork? atual = _snapshot;
+    final ExercicioWork? exercicio = exercicioAtual;
+
+    if (atual == null || exercicio == null) {
+      return false;
+    }
+
+    if (serieExecutando || seriePausada) {
+      return true;
+    }
+
+    if (atual.phase != FaseSessaoWork.exercicioRodando ||
+        atual.endsAtMs != null) {
+      return false;
+    }
+
+    return _primeiraSeriePendente(exercicio) != null;
+  }
+
   String get textoBotaoSerie {
-    final FaseSessaoWork? fase = _snapshot?.phase;
-
-    if (fase == FaseSessaoWork.exercicioRodando &&
-        _snapshot?.endsAtMs != null) {
-      return 'Série em execução';
+    if (seriePausada) {
+      return 'Retomar série';
     }
 
-    if (fase == FaseSessaoWork.descansoSerie) {
-      return 'Descanso em andamento';
+    if (serieExecutando) {
+      return 'Pausar série';
     }
 
-    if (fase == FaseSessaoWork.transicaoProximoExercicio) {
-      return 'Próximo exercício';
+    if (_snapshot?.phase == FaseSessaoWork.descansoSerie) {
+      return 'Em descanso';
+    }
+
+    if (_snapshot?.phase == FaseSessaoWork.transicaoProximoExercicio) {
+      return 'Avance para continuar';
+    }
+
+    final ExercicioWork? exercicio = exercicioAtual;
+
+    if (exercicio != null && _primeiraSeriePendente(exercicio) == null) {
+      return 'Séries concluídas';
     }
 
     return 'Iniciar série';
+  }
+
+  String get textoBotaoCardio {
+    if (_etapa != EtapaWorkNativo.cardio) {
+      return 'Cardio';
+    }
+
+    if (!_cardioIniciado) {
+      return 'Iniciar cardio';
+    }
+
+    if (pausado) {
+      return 'Retomar cardio';
+    }
+
+    return 'Pausar cardio';
+  }
+
+  Future<void> acionarBotaoSerieAtual() async {
+    if (seriePausada) {
+      await retomarSerieAtual();
+      return;
+    }
+
+    if (serieExecutando) {
+      await pausarSerieAtual();
+      return;
+    }
+
+    await iniciarSerieAtual();
+  }
+
+  Future<void> pausarSerieAtual() async {
+    final SnapshotSessaoWork? atual = _snapshot;
+
+    if (atual == null || !serieExecutando || atual.endsAtMs == null) {
+      return;
+    }
+
+    final int agora = servicoExecucaoWork.cronometro.agoraMs();
+    final int restanteMs = atual.endsAtMs! - agora;
+    final int restanteSegundos = restanteMs <= 0
+        ? 0
+        : (restanteMs / 1000).ceil();
+
+    _segundosRestantesSeriePausada = restanteSegundos;
+
+    // Não usa snapshot.pausar(), porque isso pausaria o cronômetro geral.
+    // Apenas remove o endsAtMs da série. O total do treino continua correndo.
+    _snapshot = atual
+        .recalcular(agora)
+        .copiarCom(
+          endsAtMs: null,
+          phase: FaseSessaoWork.exercicioRodando,
+          updatedAtMs: agora,
+        );
+
+    notifyListeners();
+
+    await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+  }
+
+  Future<void> retomarSerieAtual() async {
+    final SnapshotSessaoWork? atual = _snapshot;
+
+    if (atual == null || !seriePausada) {
+      return;
+    }
+
+    final int agora = servicoExecucaoWork.cronometro.agoraMs();
+    final int restante = _segundosRestantesSeriePausada ?? 0;
+    final SnapshotSessaoWork recalculado = atual.recalcular(agora);
+
+    _segundosRestantesSeriePausada = null;
+
+    _snapshot = recalculado.copiarCom(
+      endsAtMs: agora + (restante * 1000),
+      phase: FaseSessaoWork.exercicioRodando,
+      phaseBaseElapsedSeconds: recalculado.exerciseElapsedSeconds,
+      phaseStartedAtMs: agora,
+      updatedAtMs: agora,
+    );
+
+    _iniciarTimer();
+    notifyListeners();
+
+    await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
   }
 
   bool serieAtualEmExecucao(String exerciseId, int setNumber) {
     final SnapshotSessaoWork? atual = _snapshot;
     final ExercicioWork? exercicio = exercicioAtual;
 
-    return atual?.phase == FaseSessaoWork.exercicioRodando &&
-        atual?.endsAtMs != null &&
+    final bool executando =
+        atual?.phase == FaseSessaoWork.exercicioRodando &&
+        atual?.endsAtMs != null;
+
+    final bool pausada =
+        atual?.phase == FaseSessaoWork.exercicioRodando &&
+        atual?.endsAtMs == null &&
+        _segundosRestantesSeriePausada != null;
+
+    return (executando || pausada) &&
         exercicio?.id == exerciseId &&
         atual?.setIndex == setNumber - 1;
   }
@@ -250,16 +435,21 @@ class ControladorWorkNativo extends ChangeNotifier {
   Future<void> inicializar(SnapshotSessaoWork? snapshotInicial) async {
     _etapa = EtapaWorkNativo.carregando;
     _erro = null;
+    _limparPausaSerie();
+    _aguardandoCardio = false;
+    _cardioIniciado = false;
     notifyListeners();
 
     try {
       final BootstrapWorkMobile bootstrap = await servicoExecucaoWork
           .repositorio
           .carregarBootstrap();
+
       final SnapshotSessaoWork? snapshotBase =
           snapshotInicial ??
           bootstrap.activeSession.snapshot ??
           servicoExecucaoWork.snapshotAtual;
+
       final SnapshotSessaoWork? snapshot = snapshotBase == null
           ? null
           : servicoExecucaoWork.cronometro.recalcular(snapshotBase);
@@ -273,13 +463,20 @@ class ControladorWorkNativo extends ChangeNotifier {
           _workout = ficha;
           _snapshot = snapshot;
           _popularSeriesIniciais(ficha);
-          _etapa =
+
+          final bool estaNoCardio =
               snapshot.phase == FaseSessaoWork.cardioRodando ||
-                  (snapshot.phase == FaseSessaoWork.pausado &&
-                      snapshot.cardioIndex != null)
+              (snapshot.phase == FaseSessaoWork.pausado &&
+                  snapshot.cardioIndex != null);
+
+          _etapa = estaNoCardio
               ? EtapaWorkNativo.cardio
               : EtapaWorkNativo.exercicio;
+
+          _cardioIniciado = estaNoCardio && snapshot.endsAtMs != null;
+
           _iniciarTimer();
+
           await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
           await _carregarTaxaKcal(
             kind: _etapa == EtapaWorkNativo.cardio ? 'cardio' : 'exercise',
@@ -307,19 +504,45 @@ class ControladorWorkNativo extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> selecionarFicha(FichaWork ficha) async {
+  void selecionarFicha(FichaWork ficha) {
     _workout = ficha;
+    _snapshot = null;
+    _resultadoConclusao = null;
+    _limparPausaSerie();
+    _aguardandoCardio = false;
+    _cardioIniciado = false;
+    _popularSeriesIniciais(ficha);
+    _etapa = EtapaWorkNativo.resumo;
+    notifyListeners();
+  }
+
+  Future<void> iniciarExecucaoSelecionada() async {
+    final FichaWork? ficha = _workout;
+
+    if (ficha == null) {
+      _etapa = EtapaWorkNativo.historico;
+      notifyListeners();
+      return;
+    }
+
     _snapshot = _criarSnapshotInicial(ficha);
     _resultadoConclusao = null;
+    _limparPausaSerie();
+    _aguardandoCardio = false;
+    _cardioIniciado = false;
     _popularSeriesIniciais(ficha);
     _etapa = EtapaWorkNativo.exercicio;
+
+    // Cronômetro geral começa aqui.
     _iniciarTimer();
+    notifyListeners();
+
     await _sincronizarSnapshot(metodo: 'abrirWorkNativo');
     await _carregarTaxaKcal();
   }
 
   Future<void> alternarSerie(String exerciseId, int setNumber) async {
-    if (serieEmAndamento) {
+    if (edicaoSeriesBloqueada) {
       return;
     }
 
@@ -327,6 +550,7 @@ class ControladorWorkNativo extends ChangeNotifier {
       exerciseId,
       () => <int>{},
     );
+
     final bool estavaConcluida = series.contains(setNumber);
 
     if (estavaConcluida) {
@@ -345,8 +569,10 @@ class ControladorWorkNativo extends ChangeNotifier {
 
     if (atual == null ||
         exercicio == null ||
-        serieEmAndamento ||
-        atual.phase != FaseSessaoWork.exercicioRodando) {
+        serieExecutando ||
+        seriePausada ||
+        atual.phase != FaseSessaoWork.exercicioRodando ||
+        atual.endsAtMs != null) {
       return;
     }
 
@@ -357,10 +583,16 @@ class ControladorWorkNativo extends ChangeNotifier {
     }
 
     final int agora = servicoExecucaoWork.cronometro.agoraMs();
+    _limparPausaSerie();
+
     _snapshot = _iniciarContagemSerie(
       atual.recalcular(agora).copiarCom(setIndex: proximaSerie - 1),
       agora,
     );
+
+    _iniciarTimer();
+    notifyListeners();
+
     await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
   }
 
@@ -378,6 +610,7 @@ class ControladorWorkNativo extends ChangeNotifier {
       exercicio.id,
       () => <int, SerieDraftWork>{},
     )[proximaSerie] = draftAnterior;
+
     notifyListeners();
   }
 
@@ -396,6 +629,8 @@ class ControladorWorkNativo extends ChangeNotifier {
       peso: peso?.replaceAll(',', '.'),
       reps: reps?.replaceAll(',', '.'),
     );
+
+    notifyListeners();
   }
 
   bool exercicioAtualCompleto() {
@@ -418,6 +653,53 @@ class ControladorWorkNativo extends ChangeNotifier {
       return;
     }
 
+    if (serieExecutando || seriePausada) {
+      return;
+    }
+
+    final int agora = servicoExecucaoWork.cronometro.agoraMs();
+
+    // Se está no descanso entre exercícios, o botão Avançar realmente troca
+    // para o próximo exercício, mas não inicia a próxima série.
+    if (atual.phase == FaseSessaoWork.transicaoProximoExercicio) {
+      await servicoExecucaoWork.notificacaoWork.cancelarFase(atual);
+
+      if (_aguardandoCardio) {
+        await iniciarCardio();
+        return;
+      }
+
+      final int proximoIndice = atual.exerciseIndex + 1;
+
+      if (proximoIndice >= ficha.exercises.length) {
+        await iniciarCardio();
+        return;
+      }
+
+      final SnapshotSessaoWork recalculado = atual.recalcular(agora);
+
+      _snapshot = recalculado.copiarCom(
+        exerciseIndex: proximoIndice,
+        setIndex: 0,
+        endsAtMs: null,
+        phase: FaseSessaoWork.exercicioRodando,
+        phaseBaseElapsedSeconds: recalculado.exerciseElapsedSeconds,
+        phaseStartedAtMs: agora,
+        updatedAtMs: agora,
+      );
+
+      _limparPausaSerie();
+      _aguardandoCardio = false;
+
+      notifyListeners();
+
+      await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+      await _carregarTaxaKcal();
+      return;
+    }
+
+    // Mantém a regra atual: se houver séries pendentes, abre o modal
+    // perguntando se deseja avançar mesmo assim.
     if (!forcar && !exercicioAtualCompleto()) {
       throw const WorkSeriesPendentes();
     }
@@ -427,27 +709,11 @@ class ControladorWorkNativo extends ChangeNotifier {
     final int proximoIndice = atual.exerciseIndex + 1;
 
     if (proximoIndice >= ficha.exercises.length) {
-      await iniciarCardio();
+      await _prepararTransicaoParaCardio(atual, exercicio, agora);
       return;
     }
 
-    final int agora = servicoExecucaoWork.cronometro.agoraMs();
-    final int descansoSegundos =
-        (exercicio.restSeconds > 0
-            ? exercicio.restSeconds
-            : ficha.restSeconds) +
-        _extraTransicaoExercicioSegundos;
-
-    _snapshot = atual
-        .recalcular(agora)
-        .copiarCom(
-          endsAtMs: agora + (descansoSegundos * 1000),
-          phase: FaseSessaoWork.transicaoProximoExercicio,
-          restSeconds: descansoSegundos,
-          setIndex: totalSeriesExercicio(exercicio) - 1,
-          updatedAtMs: agora,
-        );
-    await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+    await _prepararTransicaoParaProximoExercicio(atual, exercicio, agora);
   }
 
   Future<void> pularDescanso() async {
@@ -457,23 +723,36 @@ class ControladorWorkNativo extends ChangeNotifier {
       return;
     }
 
+    // Agora só pula descanso entre séries.
+    if (atual.phase != FaseSessaoWork.descansoSerie) {
+      return;
+    }
+
     final ResultadoEventoWork resultado = await servicoExecucaoWork
         .tratarEventoBridge(
           metodo: 'cancelarDescansoWorkNativo',
           payload: atual.toJson(),
         );
+
     onResultadoWeb?.call(resultado);
     _snapshot = SnapshotSessaoWork.fromJson(resultado.payload);
 
     final int agora = servicoExecucaoWork.cronometro.agoraMs();
     final SnapshotSessaoWork? proximo = _snapshot;
 
-    if (proximo != null &&
-        proximo.phase == FaseSessaoWork.exercicioRodando &&
-        proximo.endsAtMs == null) {
-      _snapshot = _iniciarContagemSerie(proximo, agora);
-      await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+    // Não inicia automaticamente a próxima série.
+    // Apenas deixa a próxima série pronta para o aluno clicar em Iniciar série.
+    if (proximo != null && proximo.phase == FaseSessaoWork.exercicioRodando) {
+      _snapshot = proximo
+          .recalcular(agora)
+          .copiarCom(
+            endsAtMs: null,
+            phase: FaseSessaoWork.exercicioRodando,
+            updatedAtMs: agora,
+          );
     }
+
+    _limparPausaSerie();
 
     await _carregarTaxaKcal();
     notifyListeners();
@@ -490,37 +769,70 @@ class ControladorWorkNativo extends ChangeNotifier {
     await servicoExecucaoWork.notificacaoWork.cancelarFase(atual);
 
     final int agora = servicoExecucaoWork.cronometro.agoraMs();
-    final int cardioTargetSeconds = _parseCardioDurationSeconds(ficha.cardio);
+    final SnapshotSessaoWork recalculado = atual.recalcular(agora);
 
-    _snapshot = atual
-        .recalcular(agora)
-        .copiarCom(
-          cardioIndex: 0,
-          endsAtMs: cardioTargetSeconds > 0
-              ? agora + (cardioTargetSeconds * 1000)
-              : null,
-          elapsedSeconds: atual.cardioElapsedSeconds,
-          phase: FaseSessaoWork.cardioRodando,
-          phaseBaseElapsedSeconds: atual.cardioElapsedSeconds,
-          phaseStartedAtMs: agora,
-          updatedAtMs: agora,
-        );
+    _snapshot = recalculado.copiarCom(
+      cardioIndex: 0,
+      endsAtMs: null,
+      elapsedSeconds: recalculado.cardioElapsedSeconds,
+      phase: FaseSessaoWork.cardioRodando,
+      phaseBaseElapsedSeconds: recalculado.cardioElapsedSeconds,
+      phaseStartedAtMs: agora,
+      updatedAtMs: agora,
+    );
+
     _etapa = EtapaWorkNativo.cardio;
+    _aguardandoCardio = false;
+    _cardioIniciado = false;
+    _limparPausaSerie();
+
+    notifyListeners();
+
     await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
     await _carregarTaxaKcal(kind: 'cardio');
   }
 
   Future<void> pausarOuRetomarCardio() async {
     final SnapshotSessaoWork? atual = _snapshot;
+    final FichaWork? ficha = _workout;
 
-    if (atual == null) {
+    if (atual == null || ficha == null) {
       return;
     }
 
     final int agora = servicoExecucaoWork.cronometro.agoraMs();
+
+    // Primeiro clique no cardio: inicia a contagem.
+    if (!_cardioIniciado) {
+      final int cardioTargetSeconds = _parseCardioDurationSeconds(ficha.cardio);
+
+      _snapshot = atual
+          .recalcular(agora)
+          .copiarCom(
+            endsAtMs: cardioTargetSeconds > 0
+                ? agora + (cardioTargetSeconds * 1000)
+                : null,
+            phase: FaseSessaoWork.cardioRodando,
+            phaseBaseElapsedSeconds: atual.cardioElapsedSeconds,
+            phaseStartedAtMs: agora,
+            updatedAtMs: agora,
+          );
+
+      _cardioIniciado = true;
+      _iniciarTimer();
+      notifyListeners();
+
+      await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+      await _carregarTaxaKcal(kind: 'cardio');
+      return;
+    }
+
     _snapshot = atual.phase == FaseSessaoWork.pausado
         ? atual.retomar(agora)
         : atual.pausar(agora);
+
+    notifyListeners();
+
     await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
   }
 
@@ -543,6 +855,7 @@ class ControladorWorkNativo extends ChangeNotifier {
       estimatedKcalBurned: kcalEstimadas,
       workoutId: ficha.id,
     );
+
     final ResultadoEventoWork resultado = await servicoExecucaoWork
         .tratarEventoBridge(
           metodo: 'finalizarWorkNativo',
@@ -628,20 +941,59 @@ class ControladorWorkNativo extends ChangeNotifier {
 
     final int agora = servicoExecucaoWork.cronometro.agoraMs();
 
+    // Cardio preparado, mas ainda não iniciado pelo aluno.
+    if (_etapa == EtapaWorkNativo.cardio && !_cardioIniciado) {
+      return;
+    }
+
+    // Série pausada: o cronômetro geral continua rodando,
+    // mas o tempo restante da série fica congelado.
+    if (seriePausada) {
+      _snapshot = atual
+          .recalcular(agora)
+          .copiarCom(
+            endsAtMs: null,
+            phase: FaseSessaoWork.exercicioRodando,
+            updatedAtMs: agora,
+          );
+      notifyListeners();
+      return;
+    }
+
     if (_execucaoSerieVencida(atual, agora)) {
       await _finalizarExecucaoSerie(atual, agora);
       return;
     }
 
+    if (_transicaoExercicioVencida(atual, agora)) {
+      _snapshot = atual
+          .recalcular(agora)
+          .copiarCom(
+            endsAtMs: null,
+            phase: FaseSessaoWork.transicaoProximoExercicio,
+            updatedAtMs: agora,
+          );
+      notifyListeners();
+      unawaited(_sincronizarSnapshot(metodo: 'sincronizarWorkNativo'));
+      return;
+    }
+
     final SnapshotSessaoWork recalculado = servicoExecucaoWork.cronometro
         .recalcular(atual);
-    final bool avancouParaExercicio =
-        atual.phase != FaseSessaoWork.exercicioRodando &&
+
+    // Não inicia automaticamente a próxima série após descanso.
+    final bool descansoSerieTerminou =
+        atual.phase == FaseSessaoWork.descansoSerie &&
         recalculado.phase == FaseSessaoWork.exercicioRodando;
-    final SnapshotSessaoWork proximo =
-        avancouParaExercicio && recalculado.endsAtMs == null
-        ? _iniciarContagemSerie(recalculado, agora)
+
+    final SnapshotSessaoWork proximo = descansoSerieTerminou
+        ? recalculado.copiarCom(
+            endsAtMs: null,
+            phase: FaseSessaoWork.exercicioRodando,
+            updatedAtMs: agora,
+          )
         : recalculado;
+
     final bool mudouFase =
         proximo.phase != atual.phase ||
         proximo.exerciseIndex != atual.exerciseIndex ||
@@ -664,6 +1016,12 @@ class ControladorWorkNativo extends ChangeNotifier {
         agora >= snapshot.endsAtMs!;
   }
 
+  bool _transicaoExercicioVencida(SnapshotSessaoWork snapshot, int agora) {
+    return snapshot.phase == FaseSessaoWork.transicaoProximoExercicio &&
+        snapshot.endsAtMs != null &&
+        agora >= snapshot.endsAtMs!;
+  }
+
   Future<void> _finalizarExecucaoSerie(
     SnapshotSessaoWork atual,
     int agora,
@@ -680,10 +1038,12 @@ class ControladorWorkNativo extends ChangeNotifier {
       1,
       totalSeriesExercicio(exercicio),
     );
+
     _seriesConcluidas.putIfAbsent(exercicio.id, () => <int>{}).add(setNumber);
 
     final int? proximaSerie = _primeiraSeriePendente(exercicio);
 
+    // Ainda há séries neste exercício.
     if (proximaSerie != null) {
       final int descansoSegundos = _descansoExercicioSegundos(exercicio);
 
@@ -696,16 +1056,17 @@ class ControladorWorkNativo extends ChangeNotifier {
           updatedAtMs: agora,
         );
       } else {
-        _snapshot = _iniciarContagemSerie(
-          base.copiarCom(
-            endsAtMs: null,
-            phase: FaseSessaoWork.exercicioRodando,
-            setIndex: proximaSerie - 1,
-            updatedAtMs: agora,
-          ),
-          agora,
+        // Não inicia automaticamente a próxima série.
+        _snapshot = base.copiarCom(
+          endsAtMs: null,
+          phase: FaseSessaoWork.exercicioRodando,
+          setIndex: proximaSerie - 1,
+          updatedAtMs: agora,
         );
       }
+
+      _limparPausaSerie();
+      notifyListeners();
 
       await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
       return;
@@ -713,26 +1074,64 @@ class ControladorWorkNativo extends ChangeNotifier {
 
     final int proximoIndice = base.exerciseIndex + 1;
 
-    if (proximoIndice >= ficha.exercises.length) {
-      _snapshot = base.copiarCom(
-        endsAtMs: null,
-        setIndex: setNumber - 1,
-        updatedAtMs: agora,
-      );
-      await iniciarCardio();
+    // Acabaram as séries e existe próximo exercício:
+    // entra em descanso/hint entre exercícios e depois mostra Avançar.
+    if (proximoIndice < ficha.exercises.length) {
+      await _prepararTransicaoParaProximoExercicio(base, exercicio, agora);
       return;
     }
 
+    // Acabou o último exercício:
+    // mostra Avançar para ir ao cardio, sem iniciar cardio automaticamente.
+    await _prepararTransicaoParaCardio(base, exercicio, agora);
+  }
+
+  Future<void> _prepararTransicaoParaProximoExercicio(
+    SnapshotSessaoWork atual,
+    ExercicioWork exercicio,
+    int agora,
+  ) async {
     final int transicaoSegundos =
         _descansoExercicioSegundos(exercicio) +
         _extraTransicaoExercicioSegundos;
-    _snapshot = base.copiarCom(
-      endsAtMs: agora + (transicaoSegundos * 1000),
+
+    _aguardandoCardio = false;
+    _limparPausaSerie();
+
+    _snapshot = atual.copiarCom(
+      endsAtMs: transicaoSegundos > 0
+          ? agora + (transicaoSegundos * 1000)
+          : null,
       phase: FaseSessaoWork.transicaoProximoExercicio,
       restSeconds: transicaoSegundos,
-      setIndex: setNumber - 1,
+      setIndex: totalSeriesExercicio(exercicio) - 1,
       updatedAtMs: agora,
     );
+
+    notifyListeners();
+
+    await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
+  }
+
+  Future<void> _prepararTransicaoParaCardio(
+    SnapshotSessaoWork atual,
+    ExercicioWork exercicio,
+    int agora,
+  ) async {
+    final int descansoSegundos = _descansoExercicioSegundos(exercicio);
+
+    _aguardandoCardio = true;
+    _limparPausaSerie();
+
+    _snapshot = atual.copiarCom(
+      endsAtMs: descansoSegundos > 0 ? agora + (descansoSegundos * 1000) : null,
+      phase: FaseSessaoWork.transicaoProximoExercicio,
+      restSeconds: descansoSegundos,
+      setIndex: totalSeriesExercicio(exercicio) - 1,
+      updatedAtMs: agora,
+    );
+
+    notifyListeners();
 
     await _sincronizarSnapshot(metodo: 'sincronizarWorkNativo');
   }
@@ -792,6 +1191,10 @@ class ControladorWorkNativo extends ChangeNotifier {
     return ficha.exercises[seguro];
   }
 
+  void _limparPausaSerie() {
+    _segundosRestantesSeriePausada = null;
+  }
+
   Future<void> _sincronizarSnapshot({required String metodo}) async {
     final SnapshotSessaoWork? atual = _snapshot;
 
@@ -804,10 +1207,23 @@ class ControladorWorkNativo extends ChangeNotifier {
     try {
       final ResultadoEventoWork resultado = await servicoExecucaoWork
           .tratarEventoBridge(metodo: metodo, payload: atual.toJson());
+
       onResultadoWeb?.call(resultado);
 
       if (resultado.acao == AcaoWebWork.aplicarSnapshot) {
-        _snapshot = SnapshotSessaoWork.fromJson(resultado.payload);
+        final SnapshotSessaoWork snapshotWeb = SnapshotSessaoWork.fromJson(
+          resultado.payload,
+        );
+
+        // Preserva pausa local de série, porque o web não sabe desse estado.
+        if (seriePausada) {
+          _snapshot = snapshotWeb.copiarCom(
+            endsAtMs: null,
+            phase: FaseSessaoWork.exercicioRodando,
+          );
+        } else {
+          _snapshot = snapshotWeb;
+        }
       }
     } finally {
       _sincronizacaoEmAndamento = false;

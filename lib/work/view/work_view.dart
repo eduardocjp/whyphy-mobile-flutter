@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-
+import 'work_resumo.dart';
 import '../../funcionalidades/work/servicos/servico_execucao_work.dart';
 import '../../nucleo/tema/cores_app.dart';
 import '../../nucleo/tema/espacamento_app.dart';
@@ -57,20 +57,13 @@ class _WorkViewState extends State<WorkView> {
       child: AnimatedBuilder(
         animation: _controlador,
         builder: (BuildContext context, _) {
-          final bool etapaExecucao =
-              _controlador.etapa == EtapaWorkNativo.exercicio;
-
           return Stack(
             fit: StackFit.expand,
-            children: <Widget>[
+            children: [
               SafeArea(
-                child: Column(
-                  children: <Widget>[
-                    if (!etapaExecucao) _WorkHeader(onClose: widget.onClose),
-                    Expanded(child: _buildConteudo()),
-                  ],
-                ),
+                child: Column(children: [Expanded(child: _buildConteudo())]),
               ),
+
               if (_shareAberto && _controlador.workout != null)
                 WorkShareView(
                   cardioSeconds: _controlador.cardioElapsedSeconds,
@@ -99,12 +92,18 @@ class _WorkViewState extends State<WorkView> {
       ),
       EtapaWorkNativo.historico => WorkHistoricoView(
         controlador: _controlador,
-        onSelecionar: _controlador.abrirSelecao,
+        onVoltar: widget.onClose,
       ),
       EtapaWorkNativo.selecao => WorkSelecionarExercicio(
         controlador: _controlador,
         onVoltar: _controlador.voltarParaHistorico,
       ),
+
+      EtapaWorkNativo.resumo => WorkResumo(
+        controlador: _controlador,
+        onVoltar: _controlador.voltarParaHistorico,
+      ),
+
       EtapaWorkNativo.cardio => WorkCardio(
         controlador: _controlador,
         onCompartilhar: () => setState(() => _shareAberto = true),
@@ -143,51 +142,6 @@ class _WorkViewState extends State<WorkView> {
     widget.onAbrirRotaWeb?.call(route.toString());
     setState(() => _shareAberto = false);
     widget.onClose?.call();
-  }
-}
-
-class _WorkHeader extends StatelessWidget {
-  const _WorkHeader({this.onClose});
-
-  final VoidCallback? onClose;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(24, 18, 24, 18),
-      decoration: const BoxDecoration(
-        color: CoresApp.fundo,
-        border: Border(bottom: BorderSide(color: CoresApp.borda)),
-      ),
-      child: Row(
-        children: <Widget>[
-          const Text.rich(
-            TextSpan(
-              text: 'WHY',
-              children: <InlineSpan>[
-                TextSpan(
-                  text: 'PHY',
-                  style: TextStyle(color: CoresApp.treinos),
-                ),
-              ],
-            ),
-            style: TextStyle(
-              color: CoresApp.textoPrincipal,
-              fontSize: 30,
-              fontStyle: FontStyle.italic,
-              fontWeight: FontWeight.w900,
-              height: 1,
-            ),
-          ),
-          const Spacer(),
-          OutlinedButton.icon(
-            onPressed: onClose,
-            icon: const Icon(Icons.arrow_back_rounded),
-            label: const Text('Voltar'),
-          ),
-        ],
-      ),
-    );
   }
 }
 
