@@ -115,6 +115,41 @@ class MainActivity : FlutterActivity() {
             }
         }
 
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "br.com.whyphy/notificacoes_locais",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "agendar" -> {
+                    agendarNotificacaoLocalFlutter(call.arguments)
+                    result.success(null)
+                }
+                "cancelar" -> {
+                    cancelarNotificacaoLocalFlutter(call.arguments)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "br.com.whyphy/compartilhamento_work",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "compartilharTexto" -> {
+                    result.success(compartilharTextoWork(call.arguments))
+                }
+                "abrirCamera" -> {
+                    result.success(abrirCameraCompartilhamentoWork(call.arguments))
+                }
+                "abrirGaleria" -> {
+                    result.success(abrirGaleriaCompartilhamentoWork(call.arguments))
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         canalEventosWebview = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "br.com.whyphy/webview_eventos",
@@ -160,6 +195,9 @@ class MainActivity : FlutterActivity() {
                 "responderUploadNativo" -> {
                     responderUploadNativoWebview(call.arguments)
                     result.success(null)
+                }
+                "executarJavascriptWebview" -> {
+                    result.success(executarJavascriptWebviewAtiva(call.argument<String>("script")))
                 }
                 else -> result.notImplemented()
             }
@@ -418,6 +456,121 @@ class MainActivity : FlutterActivity() {
         """.trimIndent()
 
         webView.evaluateJavascript(script, null)
+    }
+
+    private fun executarJavascriptWebviewAtiva(script: String?): Boolean {
+        val webView = webViewAtiva ?: return false
+        val codigo = script?.trim().orEmpty()
+
+        if (codigo.isEmpty()) {
+            return false
+        }
+
+        webView.evaluateJavascript(codigo, null)
+        return true
+    }
+
+    private fun agendarNotificacaoLocalFlutter(arguments: Any?) {
+        val map = arguments as? Map<*, *> ?: return
+        val id = (map["notificationId"] as? String)?.trim().orEmpty()
+        val tituloRaw = (map["title"] as? String)?.trim().orEmpty()
+        val mensagemRaw = (map["body"] as? String)?.trim().orEmpty()
+        val titulo = tituloRaw.ifBlank { "WhyPhy" }
+        val mensagem = mensagemRaw.ifBlank { "Voce tem uma atividade pendente." }
+        val routePath = (map["routePath"] as? String)?.trim().orEmpty()
+        val tipo = (map["type"] as? String)?.lowercase(Locale.ROOT).orEmpty()
+        val triggerAtMillis = when (val valor = map["triggerAtMillis"]) {
+            is Number -> valor.toLong()
+            is String -> valor.toLongOrNull() ?: System.currentTimeMillis()
+            else -> System.currentTimeMillis()
+        }
+
+        if (id.isEmpty()) {
+            return
+        }
+
+        val canal = if (tipo.contains("meal") || tipo.contains("refeic")) {
+            CANAL_NOTIFICACAO_REFEICAO_LOCAL
+        } else {
+            CANAL_NOTIFICACAO_TREINO_LOCAL
+        }
+
+        AgendadorNotificacaoLocalWhyPhy.agendar(
+            this,
+            AgendamentoNotificacaoLocal(
+                id = id,
+                canal = canal,
+                routePath = routePath,
+                titulo = titulo,
+                mensagem = mensagem,
+                quandoMillis = triggerAtMillis,
+            ),
+        )
+    }
+
+    private fun cancelarNotificacaoLocalFlutter(arguments: Any?) {
+        val map = arguments as? Map<*, *> ?: return
+        val id = (map["notificationId"] as? String)?.trim().orEmpty()
+
+        if (id.isNotEmpty()) {
+            AgendadorNotificacaoLocalWhyPhy.cancelar(this, id)
+        }
+    }
+
+    private fun compartilharTextoWork(arguments: Any?): Boolean {
+        val map = arguments as? Map<*, *> ?: return false
+        val texto = (map["texto"] as? String)?.trim().orEmpty()
+        val tituloRaw = (map["titulo"] as? String)?.trim().orEmpty()
+        val titulo = tituloRaw.ifBlank { "Compartilhar treino WhyPhy" }
+
+        if (texto.isEmpty()) {
+            return false
+        }
+
+        return try {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, texto)
+                putExtra(Intent.EXTRA_TITLE, titulo)
+            }
+            val chooser = Intent.createChooser(sendIntent, titulo).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(chooser)
+            true
+        } catch (erro: Exception) {
+            false
+        }
+    }
+
+    private fun abrirCameraCompartilhamentoWork(arguments: Any?): Boolean {
+        val map = arguments as? Map<*, *> ?: emptyMap<String, Any?>()
+        val titulo = (map["titulo"] as? String)?.trim().orEmpty()
+            .ifBlank { "Compartilhar treino WhyPhy" }
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+
+        return try {
+            startActivity(Intent.createChooser(intent, titulo))
+            true
+        } catch (erro: Exception) {
+            false
+        }
+    }
+
+    private fun abrirGaleriaCompartilhamentoWork(arguments: Any?): Boolean {
+        val map = arguments as? Map<*, *> ?: emptyMap<String, Any?>()
+        val titulo = (map["titulo"] as? String)?.trim().orEmpty()
+            .ifBlank { "Compartilhar treino WhyPhy" }
+        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+            type = "image/*"
+        }
+
+        return try {
+            startActivity(Intent.createChooser(intent, titulo))
+            true
+        } catch (erro: Exception) {
+            false
+        }
     }
 
     private fun selecionarArquivoUploadNativo(result: MethodChannel.Result) {
@@ -1301,6 +1454,7 @@ private class WebViewWhyPhy(
                 injetarInterceptadorLogout(view)
                 injetarInterceptadorDownloads(view)
                 injetarInterceptadorDeAvisos(view)
+                injetarInterceptadorWorkNativo(view)
                 notificarCarregamento(iniciado = false)
                 injetarBridgeNotificacoesLocais(view)
             }
@@ -1416,6 +1570,17 @@ private class WebViewWhyPhy(
             return true
         }
 
+        if (hostPermitido(uri.host.orEmpty()) &&
+            ehRotaWork(uri) &&
+            uri.getQueryParameter("native_sync") != "1"
+        ) {
+            canalEventosWebview.invokeMethod(
+                "workNativoAbrirRota",
+                mapOf("routePath" to routePathParaUri(uri)),
+            )
+            return true
+        }
+
         if (hostPermitido(uri.host.orEmpty())) {
             return false
         }
@@ -1436,6 +1601,17 @@ private class WebViewWhyPhy(
     private fun deveBaixarNaWebView(uri: Uri): Boolean {
         val path = uri.path.orEmpty().lowercase(Locale.ROOT)
         return path.endsWith(".pdf")
+    }
+
+    private fun ehRotaWork(uri: Uri): Boolean {
+        val path = uri.path.orEmpty().lowercase(Locale.ROOT)
+        return path == "/work" || path.startsWith("/work/")
+    }
+
+    private fun routePathParaUri(uri: Uri): String {
+        val query = uri.encodedQuery?.let { "?$it" }.orEmpty()
+        val fragment = uri.encodedFragment?.let { "#$it" }.orEmpty()
+        return "${uri.path.orEmpty()}$query$fragment"
     }
 
     private fun nomeDownloadParaUri(uri: Uri): String {
@@ -2002,6 +2178,44 @@ private class WebViewWhyPhy(
         view.evaluateJavascript(script, null)
     }
 
+    private fun injetarInterceptadorWorkNativo(view: WebView) {
+        val script = """
+            (function() {
+              if (window.__whyphyWorkNativeRouteBridge) return;
+              window.__whyphyWorkNativeRouteBridge = true;
+
+              function ehRotaWork(url) {
+                try {
+                  var destino = new URL(String(url || ""), window.location.href);
+                  return destino.pathname === "/work" || destino.pathname.indexOf("/work/") === 0;
+                } catch (_) {
+                  return false;
+                }
+              }
+
+              function routePath(url) {
+                var destino = new URL(String(url || ""), window.location.href);
+                return destino.pathname + destino.search + destino.hash;
+              }
+
+              function abrirWork(url) {
+                if (!window.WhyPhyApp || !window.WhyPhyApp.abrirWorkNativoPorRota) return;
+                window.WhyPhyApp.abrirWorkNativoPorRota(routePath(url || "/work"));
+              }
+
+              document.addEventListener("click", function(event) {
+                var alvo = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+                if (!alvo || !ehRotaWork(alvo.href)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                abrirWork(alvo.href);
+              }, true);
+            })();
+        """.trimIndent()
+
+        view.evaluateJavascript(script, null)
+    }
+
     private fun injetarBridgeNotificacoesLocais(view: WebView) {
         val script = """
             (function() {
@@ -2192,6 +2406,67 @@ private class BridgeWhyPhyApp(
 
             canalEventosWebview.invokeMethod("uploadNativoSolicitado", map)
         }
+    }
+
+    @JavascriptInterface
+    fun abrirWorkNativo(payloadJson: String) {
+        encaminharEventoWork("abrirWorkNativo", payloadJson)
+    }
+
+    @JavascriptInterface
+    fun sincronizarWorkNativo(payloadJson: String) {
+        encaminharEventoWork("sincronizarWorkNativo", payloadJson)
+    }
+
+    @JavascriptInterface
+    fun pausarWorkNativo(payloadJson: String) {
+        encaminharEventoWork("pausarWorkNativo", payloadJson)
+    }
+
+    @JavascriptInterface
+    fun cancelarDescansoWorkNativo(payloadJson: String) {
+        encaminharEventoWork("cancelarDescansoWorkNativo", payloadJson)
+    }
+
+    @JavascriptInterface
+    fun finalizarWorkNativo(payloadJson: String) {
+        encaminharEventoWork("finalizarWorkNativo", payloadJson)
+    }
+
+    @JavascriptInterface
+    fun abrirWorkNativoPorRota(routePath: String) {
+        mainHandler.post {
+            canalEventosWebview.invokeMethod(
+                "workNativoAbrirRota",
+                mapOf("routePath" to routePath.trim().ifBlank { "/work" }),
+            )
+        }
+    }
+
+    private fun encaminharEventoWork(metodo: String, payloadJson: String) {
+        mainHandler.post {
+            canalEventosWebview.invokeMethod(
+                "workNativoEvento",
+                mapOf(
+                    "metodo" to metodo,
+                    "payloadJson" to normalizarPayloadJson(payloadJson),
+                ),
+            )
+        }
+    }
+
+    private fun normalizarPayloadJson(payloadJson: String): String {
+        val texto = payloadJson.trim()
+
+        if (texto.isEmpty()) {
+            return "{}"
+        }
+
+        if (texto.startsWith("{") && texto.endsWith("}")) {
+            return texto
+        }
+
+        return JSONObject(mapOf("valor" to texto)).toString()
     }
 
 

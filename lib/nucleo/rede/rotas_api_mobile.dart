@@ -10,4 +10,9 @@ abstract final class RotasApiMobile {
   static const String uploadExame = '/api/mobile/upload/exam';
 
   static const String pushDevice = '/api/mobile/push/device';
+
+  static const String work = '/api/mobile/work';
+  static const String workSessao = '/api/mobile/work/session';
+  static const String workKcalRate = '/api/mobile/work/kcal-rate';
+  static const String workConcluir = '/api/mobile/work/complete';
 }

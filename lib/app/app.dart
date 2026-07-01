@@ -79,12 +79,14 @@ class AplicativoWhyPhy extends StatelessWidget {
             return TelaShellWebviewIOS(
               estadoSessao: deps.estadoSessao,
               servicoAutenticacao: deps.servicoAutenticacao,
+              servicoExecucaoWork: deps.servicoExecucaoWork,
             );
           }
 
           return TelaShellWebview(
             estadoSessao: deps.estadoSessao,
             servicoAutenticacao: deps.servicoAutenticacao,
+            servicoExecucaoWork: deps.servicoExecucaoWork,
             servicoUploadMobile: deps.servicoUploadMobile,
             servicoUploadNativo: deps.servicoUploadNativo,
           );

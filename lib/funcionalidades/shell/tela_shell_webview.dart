@@ -1,15 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/rotas.dart';
+import '../../funcionalidades/work/servicos/servico_execucao_work.dart';
 import '../../nucleo/arquivos/servico_upload_mobile.dart';
 import '../../nucleo/arquivos/servico_upload_nativo.dart';
 import '../../nucleo/tema/cores_app.dart';
 import '../../nucleo/tema/espacamento_app.dart';
 import '../../nucleo/notificacoes/servico_push_mobile.dart';
 import '../../nucleo/webview/webview_whyphy_android.dart';
+import '../../work/models/work_modelos.dart';
+import '../../work/view/work_timer_flutuante.dart';
+import '../../work/view/work_view.dart';
 import '../autenticacao/estado_sessao.dart';
 import '../autenticacao/servico_autenticacao.dart';
 
@@ -18,12 +23,14 @@ class TelaShellWebview extends StatefulWidget {
     super.key,
     required this.estadoSessao,
     required this.servicoAutenticacao,
+    required this.servicoExecucaoWork,
     required this.servicoUploadMobile,
     required this.servicoUploadNativo,
   });
 
   final EstadoSessao estadoSessao;
   final ServicoAutenticacao servicoAutenticacao;
+  final ServicoExecucaoWork servicoExecucaoWork;
   final ServicoUploadMobile servicoUploadMobile;
   final ServicoUploadNativo servicoUploadNativo;
 
@@ -39,11 +46,13 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
   bool _atualizando = false;
   bool _logoutInterceptado = false;
   bool _logoutEmAndamento = false;
+  bool _workNativoAberto = false;
   bool _webviewCarregando = true;
   _EstadoErroWebview? _erroWebview;
   String? _mensagemTopo;
   String? _moduloMensagemTopo;
   String? _rotaPushPendente;
+  SnapshotSessaoWork? _workSnapshotInicial;
   StreamSubscription<Map<String, String>>? _assinaturaPushAberto;
   StreamSubscription<Map<String, String>>? _assinaturaPushRecebido;
   Timer? _timerMensagemTopo;
@@ -54,6 +63,7 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
     widget.estadoSessao.addListener(_atualizar);
     _canalEventosWebview.setMethodCallHandler(_tratarEventoWebview);
     _escutarPushFlutter();
+    unawaited(widget.servicoExecucaoWork.restaurarCheckpoint());
     unawaited(_consumirPushInicial());
   }
 
@@ -126,6 +136,84 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
 
     if (call.method == 'uploadNativoSolicitado') {
       await _tratarUploadNativo(_extrairSolicitacaoUpload(call.arguments));
+      return;
+    }
+
+    if (call.method == 'workNativoEvento') {
+      await _tratarEventoWorkNativo(call.arguments);
+      return;
+    }
+
+    if (call.method == 'workNativoAbrirRota') {
+      await _abrirWorkNativoPorRota(_extrairRoutePath(call.arguments));
+    }
+  }
+
+  Future<void> _tratarEventoWorkNativo(Object? arguments) async {
+    final _EventoWorkNativo? evento = _extrairEventoWorkNativo(arguments);
+
+    if (evento == null) {
+      return;
+    }
+
+    final ResultadoEventoWork resultado = await widget.servicoExecucaoWork
+        .tratarEventoBridge(metodo: evento.metodo, payload: evento.payload);
+
+    if (evento.metodo == 'abrirWorkNativo' ||
+        evento.metodo == 'sincronizarWorkNativo') {
+      final SnapshotSessaoWork? snapshot = _extrairSnapshotWork(evento.payload);
+
+      if (snapshot != null && mounted) {
+        setState(() {
+          _workNativoAberto = true;
+          _workSnapshotInicial = snapshot;
+        });
+      }
+    }
+
+    await _enviarResultadoWorkParaWeb(resultado);
+  }
+
+  Future<void> _abrirWorkNativoPorRota(String routePath) async {
+    if (!_ehRotaWork(routePath)) {
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _workNativoAberto = true;
+        _workSnapshotInicial = widget.servicoExecucaoWork.snapshotAtual;
+      });
+    }
+
+    await _sincronizarWebviewWork();
+  }
+
+  Future<void> _enviarResultadoWorkParaWeb(
+    ResultadoEventoWork resultado,
+  ) async {
+    final String metodo = resultado.acao.metodo;
+    final String payloadJson = jsonEncode(resultado.payload);
+    final String metodoJson = jsonEncode(metodo);
+    final String script =
+        '''
+        (function() {
+          var handlers = window.WhyPhyWork || {};
+          var metodo = $metodoJson;
+          var payload = $payloadJson;
+          if (handlers && typeof handlers[metodo] === "function") {
+            handlers[metodo](payload);
+          }
+        })();
+        ''';
+
+    try {
+      await _canalEventosWebview.invokeMethod<void>(
+        'executarJavascriptWebview',
+        <String, Object?>{'script': script},
+      );
+    } on PlatformException {
+      return;
     }
   }
 
@@ -292,6 +380,11 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       return;
     }
 
+    if (_ehRotaWork(carga.routePath)) {
+      unawaited(_abrirWorkNativoPorRota(carga.routePath));
+      return;
+    }
+
     setState(() {
       _rotaPushPendente = carga.routePath;
       _webviewCarregando = true;
@@ -335,6 +428,28 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
     }
   }
 
+  Future<void> _sincronizarWebviewWork() async {
+    final SessaoWhyPhy? sessao = widget.estadoSessao.sessaoAtual;
+    final bootstrap = sessao?.bootstrap;
+
+    if (bootstrap == null) {
+      return;
+    }
+
+    try {
+      await _canalEventosWebview
+          .invokeMethod<bool>('navegarWebview', <String, Object?>{
+            'routePath': _rotaWorkSincronizacao,
+            'url': _resolverUrlWebview(
+              bootstrap.webviewUrl,
+              _rotaWorkSincronizacao,
+            ),
+          });
+    } on PlatformException {
+      return;
+    }
+  }
+
   Future<void> _recarregarWebview() async {
     setState(() {
       _erroWebview = null;
@@ -374,6 +489,18 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
     };
 
     return uriBase.replace(queryParameters: query).toString();
+  }
+
+  String _extrairRoutePath(Object? arguments) {
+    if (arguments is Map<Object?, Object?>) {
+      return _lerString(arguments, 'routePath');
+    }
+
+    if (arguments is String) {
+      return arguments.trim();
+    }
+
+    return '';
   }
 
   Future<void> _limparCookiesWebview() async {
@@ -423,6 +550,58 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
       mediaId: '',
       refeicaoLogId: '',
     );
+  }
+
+  _EventoWorkNativo? _extrairEventoWorkNativo(Object? arguments) {
+    if (arguments is! Map<Object?, Object?>) {
+      return null;
+    }
+
+    final String metodo = _lerString(arguments, 'metodo');
+    final String payloadJson = _lerString(arguments, 'payloadJson');
+
+    if (metodo.isEmpty) {
+      return null;
+    }
+
+    if (payloadJson.isEmpty) {
+      return _EventoWorkNativo(
+        metodo: metodo,
+        payload: const <String, Object?>{},
+      );
+    }
+
+    final Object? decoded;
+
+    try {
+      decoded = jsonDecode(payloadJson);
+    } on FormatException {
+      return _EventoWorkNativo(metodo: metodo, payload: <String, Object?>{});
+    }
+
+    if (decoded is Map<String, Object?>) {
+      return _EventoWorkNativo(metodo: metodo, payload: decoded);
+    }
+
+    return _EventoWorkNativo(metodo: metodo, payload: <String, Object?>{});
+  }
+
+  SnapshotSessaoWork? _extrairSnapshotWork(Map<String, Object?> payload) {
+    try {
+      final Object? snapshotValue = payload['snapshot'];
+
+      if (snapshotValue is Map<String, Object?>) {
+        return SnapshotSessaoWork.fromJson(snapshotValue);
+      }
+
+      if (payload.containsKey('workoutId') && payload.containsKey('phase')) {
+        return SnapshotSessaoWork.fromJson(payload);
+      }
+    } on FormatException {
+      return null;
+    }
+
+    return null;
   }
 
   Future<void> _tratarUploadNativo(_SolicitacaoUploadNativo solicitacao) async {
@@ -622,6 +801,12 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
         !routePath.startsWith('//');
   }
 
+  bool _ehRotaWork(String routePath) {
+    final Uri? uri = Uri.tryParse(routePath.trim());
+    final String path = uri?.path.toLowerCase() ?? '';
+    return path == '/work' || path.startsWith('/work/');
+  }
+
   String _moduloPorRota(String routePath) {
     final String rota = routePath.toLowerCase();
 
@@ -717,6 +902,38 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
               modulo: _moduloMensagemTopo ?? '',
             ),
           ),
+        if (_workNativoAberto)
+          Positioned.fill(
+            child: WorkView(
+              onAbrirRotaWeb: (String routePath) {
+                setState(() {
+                  _workNativoAberto = false;
+                });
+                unawaited(_navegarWebview(routePath));
+              },
+              servicoExecucaoWork: widget.servicoExecucaoWork,
+              snapshotInicial: _workSnapshotInicial,
+              onResultadoWeb: (ResultadoEventoWork resultado) {
+                unawaited(_enviarResultadoWorkParaWeb(resultado));
+              },
+              onClose: () {
+                setState(() {
+                  _workNativoAberto = false;
+                });
+              },
+            ),
+          ),
+        WorkTimerFlutuante(
+          onTap: () {
+            setState(() {
+              _workNativoAberto = true;
+              _workSnapshotInicial = widget.servicoExecucaoWork.snapshotAtual;
+            });
+            unawaited(_sincronizarWebviewWork());
+          },
+          servicoExecucaoWork: widget.servicoExecucaoWork,
+          visivel: !_workNativoAberto,
+        ),
       ],
     );
 
@@ -788,11 +1005,20 @@ class _TelaShellWebviewState extends State<TelaShellWebview> {
   }
 }
 
+const String _rotaWorkSincronizacao = '/work?resume=1&native_sync=1';
+
 class _CargaPushAberta {
   const _CargaPushAberta({required this.mensagem, required this.routePath});
 
   final String mensagem;
   final String routePath;
+}
+
+class _EventoWorkNativo {
+  const _EventoWorkNativo({required this.metodo, required this.payload});
+
+  final String metodo;
+  final Map<String, Object?> payload;
 }
 
 class _SolicitacaoUploadNativo {
